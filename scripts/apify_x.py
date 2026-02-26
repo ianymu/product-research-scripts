@@ -1,12 +1,14 @@
 """
-V7 Pipeline — X/Twitter Scraper via Apify
-Adapted from MoltBot X Scraper. Uses Apify API instead of Playwright.
-Reuses tier0/filtered account config from x_accounts.json.
+V7 Pipeline — X/Twitter Scraper via Apify (apidojo/tweet-scraper)
+Uses searchTerms for both keyword search AND account monitoring (via from:username).
+
+Usage: python3 apify_x.py [cycle_id]
 """
 import os
 import json
 import sys
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, timezone
 from apify_client import ApifyClient
 from supabase import create_client
 
@@ -14,23 +16,21 @@ APIFY_API_KEY = os.environ["APIFY_API_KEY"]
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 
+ACTOR_ID = "apidojo/tweet-scraper"
 MAX_AGE_DAYS = 15
+MAX_TWEETS_PER_SEARCH = 30
 
-# Account tiers (from MoltBot x_accounts.json)
+# --- Account monitoring via "from:username" search ---
 TIER0_ACCOUNTS = [
-    # Original 16 indie makers + AI labs
     "levelsio", "dannypostma", "marclouvion", "mckaywrigley",
     "tibo_maker", "OpenAI", "AnthropicAI", "GoogleDeepMind",
     "xai", "MistralAI", "perplexity_ai", "karpathy",
     "sama", "ylecun", "drjimfan", "AndrewYNg",
-    # New: VC / product discovery (gold for toC/fundable signals)
     "ProductHunt", "ycombinator", "paulg", "naval", "garrytan",
 ]
 
 FILTERED_ACCOUNTS = [
-    # Original 5
     "bcherny", "_catwu", "cursor_ai", "_akhaliq", "rowancheung",
-    # New: product/growth experts
     "lennysan", "gregisenberg", "Jason",
 ]
 
@@ -41,88 +41,124 @@ FILTER_RULES = {
     "min_retweets_after_6h": 50,
 }
 
+# --- Keyword searches for toC/fundable product signals ---
+KEYWORD_SEARCHES = [
+    '"I wish there was" OR "someone should build" OR "why is there no"',
+    '"paying for" AND ("app" OR "tool") AND ("frustrating" OR "broken" OR "terrible")',
+    '"switched from" AND ("better" OR "alternative" OR "replaced")',
+    '"went viral" OR "million users" OR "addicted to" AND ("app" OR "product")',
+    '"shut down" OR "pivoted" OR "raised funding" AND ("startup" OR "product")',
+]
+
 
 def passes_filter(tweet: dict) -> bool:
     """Check if tweet passes engagement filter."""
     likes = tweet.get("likeCount", 0) or 0
     retweets = tweet.get("retweetCount", 0) or 0
     created = tweet.get("createdAt", "")
-
     try:
         tweet_time = datetime.fromisoformat(created.replace("Z", "+00:00"))
-        age_hours = (datetime.now(tweet_time.tzinfo) - tweet_time).total_seconds() / 3600
+        age_hours = (datetime.now(timezone.utc) - tweet_time).total_seconds() / 3600
     except Exception:
         age_hours = 24
-
     if age_hours <= 6:
         return likes >= FILTER_RULES["min_likes_within_6h"] or retweets >= FILTER_RULES["min_retweets_within_6h"]
     return likes >= FILTER_RULES["min_likes_after_6h"] or retweets >= FILTER_RULES["min_retweets_after_6h"]
+
+
+def run_search(client, query, max_tweets=MAX_TWEETS_PER_SEARCH):
+    """Run a single search via apidojo/tweet-scraper."""
+    run = client.actor(ACTOR_ID).call(
+        run_input={"searchTerms": [query], "maxTweets": max_tweets, "proxy": {"useApifyProxy": True}},
+        timeout_secs=300,
+    )
+    return list(client.dataset(run["defaultDatasetId"]).iterate_items())
 
 
 def scrape_x(cycle_id: int) -> dict:
     """Scrape X/Twitter via Apify and write to Supabase."""
     client = ApifyClient(APIFY_API_KEY)
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-    cutoff = datetime.utcnow() - timedelta(days=MAX_AGE_DAYS)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
 
-    results = {"total": 0, "written": 0, "errors": 0, "filtered_out": 0}
+    results = {"total": 0, "written": 0, "duplicates": 0, "errors": 0, "filtered_out": 0}
+    seen_ids = set()
 
-    all_accounts = [(a, False) for a in TIER0_ACCOUNTS] + [(a, True) for a in FILTERED_ACCOUNTS]
+    def process_tweet(item, source_username="", apply_filter=False):
+        results["total"] += 1
+        source_id = str(item.get("id", ""))
+        if not source_id or source_id in seen_ids:
+            return
+        seen_ids.add(source_id)
 
-    for username, apply_filter in all_accounts:
+        # Age filter
+        created = item.get("createdAt", "")
         try:
-            run_input = {
-                "handle": [username],
-                "maxTweets": 30,
-                "proxy": {"useApifyProxy": True},
-            }
+            tweet_time = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            if tweet_time < cutoff:
+                results["filtered_out"] += 1
+                return
+        except Exception:
+            pass
 
-            run = client.actor("apify/twitter-scraper").call(run_input=run_input)
-            dataset = client.dataset(run["defaultDatasetId"])
+        # Engagement filter for filtered accounts
+        if apply_filter and not passes_filter(item):
+            results["filtered_out"] += 1
+            return
 
-            for item in dataset.iterate_items():
-                results["total"] += 1
+        author = source_username or item.get("author", {}).get("userName", "") or "unknown"
+        text = item.get("text", "") or item.get("full_text", "") or ""
 
-                # Age filter
-                created = item.get("createdAt", "")
-                try:
-                    tweet_time = datetime.fromisoformat(created.replace("Z", "+00:00"))
-                    if tweet_time.replace(tzinfo=None) < cutoff:
-                        results["filtered_out"] += 1
-                        continue
-                except Exception:
-                    pass
-
-                # Engagement filter for filtered accounts
-                if apply_filter and not passes_filter(item):
-                    results["filtered_out"] += 1
-                    continue
-
-                record = {
-                    "cycle_id": cycle_id,
-                    "source": "twitter",
-                    "source_url": item.get("url", f"https://x.com/{username}/status/{item.get('id', '')}"),
-                    "source_id": str(item.get("id", "")),
-                    "author": username,
-                    "title": (item.get("text", "")[:50] + "...") if len(item.get("text", "")) > 50 else item.get("text", ""),
-                    "content": (item.get("text", "") or "")[:4000],
-                    "raw_data": json.dumps(item),
-                    "collected_at": datetime.utcnow().isoformat(),
-                }
-
-                try:
-                    sb.table("pain_points").insert(record).execute()
-                    results["written"] += 1
-                except Exception as e:
-                    if "23505" in str(e) or "duplicate" in str(e).lower():
-                        results.setdefault("duplicates", 0)
-                        results["duplicates"] += 1
-                    else:
-                        results["errors"] += 1
-
+        record = {
+            "cycle_id": cycle_id,
+            "source": "twitter",
+            "source_url": item.get("url", "https://x.com/i/status/" + source_id),
+            "source_id": source_id,
+            "author": author,
+            "title": (text[:50] + "...") if len(text) > 50 else text,
+            "content": text[:4000],
+            "raw_data": json.dumps(item),
+            "collected_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            sb.table("pain_points").insert(record).execute()
+            results["written"] += 1
         except Exception as e:
-            print(f"  X scrape error for @{username}: {e}", file=sys.stderr)
+            if "23505" in str(e) or "duplicate" in str(e).lower():
+                results["duplicates"] += 1
+            else:
+                results["errors"] += 1
+
+    # Part 1: Account monitoring via "from:username" (batch 5 per query)
+    all_accounts = [(a, False) for a in TIER0_ACCOUNTS] + [(a, True) for a in FILTERED_ACCOUNTS]
+    batch_size = 5
+    for i in range(0, len(all_accounts), batch_size):
+        batch = all_accounts[i:i + batch_size]
+        query = " OR ".join("from:" + a[0] for a in batch)
+        apply_filter = any(a[1] for a in batch)
+        try:
+            print(f"  Accounts batch {i // batch_size + 1}: {query[:60]}...")
+            items = run_search(client, query, max_tweets=batch_size * MAX_TWEETS_PER_SEARCH)
+            for item in items:
+                author = item.get("author", {}).get("userName", "") or ""
+                is_filtered = any(a[0].lower() == author.lower() and a[1] for a in batch)
+                process_tweet(item, author, is_filtered)
+        except Exception as e:
+            print(f"  Account batch error: {e}", file=sys.stderr)
             results["errors"] += 1
+        time.sleep(3)
+
+    # Part 2: Keyword searches
+    for i, query in enumerate(KEYWORD_SEARCHES):
+        try:
+            print(f"  Keyword {i + 1}/{len(KEYWORD_SEARCHES)}: {query[:50]}...")
+            items = run_search(client, query)
+            for item in items:
+                process_tweet(item)
+        except Exception as e:
+            print(f"  Keyword search error: {e}", file=sys.stderr)
+            results["errors"] += 1
+        time.sleep(3)
 
     return results
 
