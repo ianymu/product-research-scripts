@@ -19,11 +19,15 @@ SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 ALGOLIA_BASE = "https://hn.algolia.com/api/v1/search"
 
 SEARCH_QUERIES = [
+    # Original 6 queries (kept)
     "Show HN", "Ask HN need", "frustrated with",
-    "looking for tool", "built this because", "pain point"
+    "looking for tool", "built this because", "pain point",
+    # New: toC / fundable / viral signals
+    "consumer app", "went viral", "million users",
+    "launched today", "raised funding", "acquired by",
 ]
-HITS_PER_PAGE = 50
-MAX_ITEMS = 300
+HITS_PER_PAGE = 100
+MAX_ITEMS = 1200
 
 
 def scrape_hn(cycle_id: int) -> dict:

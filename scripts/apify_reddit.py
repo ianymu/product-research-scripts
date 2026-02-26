@@ -15,15 +15,26 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 
 SUBREDDITS = [
-    "SaaS", "startups", "Entrepreneur", "smallbusiness",
-    "microsaas", "indiehackers", "webdev", "programming"
+    # Original startup/tech subs
+    "SaaS", "startups", "Entrepreneur", "indiehackers",
+    # Consumer-facing subs (toC product discovery)
+    "productivity", "personalfinance", "fitness", "selfimprovement",
+    "apps", "technology", "Futurology", "ArtificialIntelligence"
 ]
 SEARCH_TERMS = [
+    # Original 9 keywords (kept)
     "pain point", "frustrating", "wish there was",
     "paying for", "need a tool", "hate using",
-    "looking for", "alternative to", "struggling with"
+    "looking for", "alternative to", "struggling with",
+    # New: direct demand signals
+    "someone should build", "why isn't there",
+    "I'd pay for", "can't believe there's no",
+    # New: virality / fundable signals
+    "switched from", "shut up and take my money",
+    "addicted to", "everyone is using", "went viral",
+    "changed my life", "million users",
 ]
-MAX_ITEMS = 500
+MAX_ITEMS = 2500
 TIME_RANGE = "week"
 
 
@@ -66,8 +77,12 @@ def scrape_reddit(cycle_id: int) -> dict:
                     sb.table("pain_points").insert(record).execute()
                     results["written"] += 1
                 except Exception as e:
-                    results["errors"] += 1
-                    print(f"  Write error: {e}", file=sys.stderr)
+                    if "23505" in str(e) or "duplicate" in str(e).lower():
+                        results.setdefault("duplicates", 0)
+                        results["duplicates"] += 1
+                    else:
+                        results["errors"] += 1
+                        print(f"  Write error: {e}", file=sys.stderr)
 
         except Exception as e:
             print(f"  Scrape error for r/{subreddit}: {e}", file=sys.stderr)

@@ -18,14 +18,20 @@ MAX_AGE_DAYS = 15
 
 # Account tiers (from MoltBot x_accounts.json)
 TIER0_ACCOUNTS = [
+    # Original 16 indie makers + AI labs
     "levelsio", "dannypostma", "marclouvion", "mckaywrigley",
     "tibo_maker", "OpenAI", "AnthropicAI", "GoogleDeepMind",
     "xai", "MistralAI", "perplexity_ai", "karpathy",
-    "sama", "ylecun", "drjimfan", "AndrewYNg"
+    "sama", "ylecun", "drjimfan", "AndrewYNg",
+    # New: VC / product discovery (gold for toC/fundable signals)
+    "ProductHunt", "ycombinator", "paulg", "naval", "garrytan",
 ]
 
 FILTERED_ACCOUNTS = [
-    "bcherny", "_catwu", "cursor_ai", "_akhaliq", "rowancheung"
+    # Original 5
+    "bcherny", "_catwu", "cursor_ai", "_akhaliq", "rowancheung",
+    # New: product/growth experts
+    "lennysan", "gregisenberg", "Jason",
 ]
 
 FILTER_RULES = {
@@ -67,7 +73,7 @@ def scrape_x(cycle_id: int) -> dict:
         try:
             run_input = {
                 "handle": [username],
-                "maxTweets": 20,
+                "maxTweets": 30,
                 "proxy": {"useApifyProxy": True},
             }
 
@@ -108,7 +114,11 @@ def scrape_x(cycle_id: int) -> dict:
                     sb.table("pain_points").insert(record).execute()
                     results["written"] += 1
                 except Exception as e:
-                    results["errors"] += 1
+                    if "23505" in str(e) or "duplicate" in str(e).lower():
+                        results.setdefault("duplicates", 0)
+                        results["duplicates"] += 1
+                    else:
+                        results["errors"] += 1
 
         except Exception as e:
             print(f"  X scrape error for @{username}: {e}", file=sys.stderr)

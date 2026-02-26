@@ -16,7 +16,7 @@ START_URLS = [
     "https://www.indiehackers.com/posts?sort=trending",
     "https://www.indiehackers.com/posts?sort=newest",
 ]
-MAX_ITEMS = 200
+MAX_ITEMS = 600
 
 
 def scrape_indiehackers(cycle_id: int) -> dict:
@@ -54,7 +54,11 @@ def scrape_indiehackers(cycle_id: int) -> dict:
                 sb.table("pain_points").insert(record).execute()
                 results["written"] += 1
             except Exception as e:
-                results["errors"] += 1
+                if "23505" in str(e) or "duplicate" in str(e).lower():
+                    results.setdefault("duplicates", 0)
+                    results["duplicates"] += 1
+                else:
+                    results["errors"] += 1
     except Exception as e:
         print(f"  IndieHackers scrape error: {e}", file=sys.stderr)
 
