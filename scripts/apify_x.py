@@ -91,10 +91,10 @@ def scrape_x(cycle_id: int) -> dict:
             return
         seen_ids.add(source_id)
 
-        # Age filter
+        # Age filter (Twitter format: "Mon Mar 17 22:14:00 +0000 2025")
         created = item.get("createdAt", "")
         try:
-            tweet_time = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            tweet_time = datetime.strptime(created, "%a %b %d %H:%M:%S %z %Y")
             if tweet_time < cutoff:
                 results["filtered_out"] += 1
                 return
