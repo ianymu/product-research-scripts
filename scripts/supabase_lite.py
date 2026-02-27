@@ -29,6 +29,7 @@ class SupabaseLite:
             headers=self.headers,
             json=record,
             timeout=30,
+            verify=False,
         )
         if resp.status_code in (200, 201):
             return True
@@ -55,6 +56,7 @@ class SupabaseLite:
             headers=headers,
             params=params,
             timeout=30,
+            verify=False,
         )
         resp.raise_for_status()
         return resp.json()
