@@ -11,7 +11,12 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import requests
-from supabase import create_client
+try:
+    from supabase import create_client
+    USE_LITE = False
+except ImportError:
+    from supabase_lite import SupabaseLite, DuplicateError
+    USE_LITE = True
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
@@ -32,7 +37,10 @@ MAX_ITEMS = 1200
 
 def scrape_hn(cycle_id: int) -> dict:
     """Scrape HackerNews via Algolia API and write to Supabase."""
-    sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+    if USE_LITE:
+        sb = SupabaseLite(SUPABASE_URL, SUPABASE_KEY)
+    else:
+        sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
     results = {"total": 0, "written": 0, "duplicates": 0, "errors": 0}
     seen_ids = set()
@@ -74,10 +82,13 @@ def scrape_hn(cycle_id: int) -> dict:
                 }
 
                 try:
-                    sb.table("pain_points").insert(record).execute()
+                    if USE_LITE:
+                        sb.insert("pain_points", record)
+                    else:
+                        sb.table("pain_points").insert(record).execute()
                     results["written"] += 1
                 except Exception as e:
-                    if "23505" in str(e) or "duplicate" in str(e).lower():
+                    if "23505" in str(e) or "duplicate" in str(e).lower() or "DuplicateError" in type(e).__name__:
                         results["duplicates"] += 1
                     else:
                         results["errors"] += 1

@@ -10,7 +10,12 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from apify_client import ApifyClient
-from supabase import create_client
+try:
+    from supabase import create_client
+    USE_LITE = False
+except ImportError:
+    from supabase_lite import SupabaseLite, DuplicateError
+    USE_LITE = True
 
 APIFY_API_KEY = os.environ["APIFY_API_KEY"]
 SUPABASE_URL = os.environ["SUPABASE_URL"]
@@ -78,7 +83,7 @@ def run_search(client, query, max_tweets=MAX_TWEETS_PER_SEARCH):
 def scrape_x(cycle_id: int) -> dict:
     """Scrape X/Twitter via Apify and write to Supabase."""
     client = ApifyClient(APIFY_API_KEY)
-    sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+    sb = SupabaseLite(SUPABASE_URL, SUPABASE_KEY) if USE_LITE else create_client(SUPABASE_URL, SUPABASE_KEY)
     cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
 
     results = {"total": 0, "written": 0, "duplicates": 0, "errors": 0, "filtered_out": 0}
@@ -121,10 +126,13 @@ def scrape_x(cycle_id: int) -> dict:
             "collected_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
-            sb.table("pain_points").insert(record).execute()
+            if USE_LITE:
+                sb.insert("pain_points", record)
+            else:
+                sb.table("pain_points").insert(record).execute()
             results["written"] += 1
         except Exception as e:
-            if "23505" in str(e) or "duplicate" in str(e).lower():
+            if "23505" in str(e) or "duplicate" in str(e).lower() or "DuplicateError" in type(e).__name__:
                 results["duplicates"] += 1
             else:
                 results["errors"] += 1

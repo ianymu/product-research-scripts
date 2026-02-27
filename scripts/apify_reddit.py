@@ -9,7 +9,12 @@ import json
 import sys
 from datetime import datetime, timezone
 from apify_client import ApifyClient
-from supabase import create_client
+try:
+    from supabase import create_client
+    USE_LITE = False
+except ImportError:
+    from supabase_lite import SupabaseLite, DuplicateError
+    USE_LITE = True
 
 APIFY_API_KEY = os.environ["APIFY_API_KEY"]
 SUPABASE_URL = os.environ["SUPABASE_URL"]
@@ -44,7 +49,7 @@ TIME_RANGE = "week"
 def scrape_reddit(cycle_id: int) -> dict:
     """Scrape Reddit via trudax/reddit-scraper and write to Supabase."""
     client = ApifyClient(APIFY_API_KEY)
-    sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+    sb = SupabaseLite(SUPABASE_URL, SUPABASE_KEY) if USE_LITE else create_client(SUPABASE_URL, SUPABASE_KEY)
 
     results = {"total": 0, "written": 0, "duplicates": 0, "errors": 0}
     seen_ids = set()
@@ -84,10 +89,13 @@ def scrape_reddit(cycle_id: int) -> dict:
                     }
 
                     try:
-                        sb.table("pain_points").insert(record).execute()
+                        if USE_LITE:
+                            sb.insert("pain_points", record)
+                        else:
+                            sb.table("pain_points").insert(record).execute()
                         results["written"] += 1
                     except Exception as e:
-                        if "23505" in str(e) or "duplicate" in str(e).lower():
+                        if "23505" in str(e) or "duplicate" in str(e).lower() or "DuplicateError" in type(e).__name__:
                             results["duplicates"] += 1
                         else:
                             results["errors"] += 1
