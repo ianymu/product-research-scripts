@@ -1,6 +1,6 @@
 """
-V7 Pipeline — Reddit Pain Point Scraper via Apify Web Scraper
-Uses apify/web-scraper (free) to crawl old.reddit.com search pages.
+V7 Pipeline — Reddit Pain Point Scraper via trudax/reddit-scraper (paid Actor)
+Scrapes subreddits for toC/startup pain points.
 
 Usage: python3 apify_reddit.py [cycle_id]
 """
@@ -14,6 +14,8 @@ from supabase import create_client
 APIFY_API_KEY = os.environ["APIFY_API_KEY"]
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+
+ACTOR_ID = "trudax/reddit-scraper"
 
 SUBREDDITS = [
     # Original startup/tech subs
@@ -35,106 +37,72 @@ SEARCH_TERMS = [
     "addicted to", "everyone is using", "went viral",
     "changed my life", "million users",
 ]
-MAX_ITEMS = 2500
-
-# JavaScript pageFunction for old.reddit.com search results
-PAGE_FUNCTION = """
-async function pageFunction(context) {
-    const { $, request, log } = context;
-    const results = [];
-    $('div.search-result-link').each((i, el) => {
-        const $el = $(el);
-        const title = $el.find('a.search-title').text().trim();
-        const url = $el.find('a.search-title').attr('href') || '';
-        const author = $el.find('a.author').text().trim();
-        const selftext = $el.find('div.search-result-body').text().trim();
-        const id = url.match(/comments\\/([a-z0-9]+)\\//);
-        results.push({
-            title: title,
-            url: url.startsWith('http') ? url : 'https://old.reddit.com' + url,
-            author: author,
-            selftext: selftext,
-            id: id ? id[1] : '',
-            searchUrl: request.url,
-        });
-    });
-    return results;
-}
-"""
-
-
-def build_search_urls():
-    """Build old.reddit.com search URLs for all sub+term combinations."""
-    urls = []
-    for sub in SUBREDDITS:
-        for term in SEARCH_TERMS:
-            url = f"https://old.reddit.com/r/{sub}/search?q={term.replace(' ', '+')}&restrict_sr=on&sort=relevance&t=week"
-            urls.append({"url": url})
-    return urls
+MAX_ITEMS_PER_SEARCH = 15
+TIME_RANGE = "week"
 
 
 def scrape_reddit(cycle_id: int) -> dict:
-    """Scrape Reddit via Apify Web Scraper and write to Supabase."""
+    """Scrape Reddit via trudax/reddit-scraper and write to Supabase."""
     client = ApifyClient(APIFY_API_KEY)
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
     results = {"total": 0, "written": 0, "duplicates": 0, "errors": 0}
     seen_ids = set()
 
-    start_urls = build_search_urls()
-    print(f"  {len(start_urls)} search URLs ({len(SUBREDDITS)} subs x {len(SEARCH_TERMS)} terms)")
-
-    try:
-        run = client.actor("apify/web-scraper").call(
-            run_input={
-                "startUrls": start_urls,
-                "pageFunction": PAGE_FUNCTION,
-                "maxPagesPerCrawl": MAX_ITEMS,
-                "proxy": {"useApifyProxy": True},
-                "maxConcurrency": 5,
-            },
-            timeout_secs=3600,
-        )
-        dataset = client.dataset(run["defaultDatasetId"])
-
-        for item in dataset.iterate_items():
-            post_id = item.get("id", "")
-            if not post_id or post_id in seen_ids:
-                continue
-            seen_ids.add(post_id)
-            results["total"] += 1
-
-            record = {
-                "cycle_id": cycle_id,
-                "source": "reddit",
-                "source_url": item.get("url", ""),
-                "source_id": post_id,
-                "author": item.get("author", ""),
-                "title": item.get("title", ""),
-                "content": (item.get("selftext", "") or item.get("title", ""))[:4000],
-                "raw_data": json.dumps(item),
-                "collected_at": datetime.now(timezone.utc).isoformat(),
-            }
-
+    for subreddit in SUBREDDITS:
+        for term in SEARCH_TERMS:
+            search_url = f"https://www.reddit.com/r/{subreddit}/search/?q={term.replace(' ', '+')}&sort=relevance&t={TIME_RANGE}"
             try:
-                sb.table("pain_points").insert(record).execute()
-                results["written"] += 1
-            except Exception as e:
-                if "23505" in str(e) or "duplicate" in str(e).lower():
-                    results["duplicates"] += 1
-                else:
-                    results["errors"] += 1
-                    print(f"  Write error: {e}", file=sys.stderr)
+                run = client.actor(ACTOR_ID).call(
+                    run_input={
+                        "startUrls": [{"url": search_url}],
+                        "maxItems": MAX_ITEMS_PER_SEARCH,
+                        "proxy": {"useApifyProxy": True},
+                        "skipComments": True,
+                    },
+                    timeout_secs=120,
+                )
+                dataset = client.dataset(run["defaultDatasetId"])
 
-    except Exception as e:
-        print(f"  Reddit scrape error: {e}", file=sys.stderr)
-        results["errors"] += 1
+                for item in dataset.iterate_items():
+                    post_id = item.get("parsedId", "") or item.get("id", "")
+                    if not post_id or post_id in seen_ids:
+                        continue
+                    seen_ids.add(post_id)
+                    results["total"] += 1
+
+                    record = {
+                        "cycle_id": cycle_id,
+                        "source": "reddit",
+                        "source_url": item.get("url", ""),
+                        "source_id": str(post_id),
+                        "author": item.get("username", ""),
+                        "title": item.get("title", ""),
+                        "content": (item.get("body", "") or item.get("title", ""))[:4000],
+                        "raw_data": json.dumps(item),
+                        "collected_at": datetime.now(timezone.utc).isoformat(),
+                    }
+
+                    try:
+                        sb.table("pain_points").insert(record).execute()
+                        results["written"] += 1
+                    except Exception as e:
+                        if "23505" in str(e) or "duplicate" in str(e).lower():
+                            results["duplicates"] += 1
+                        else:
+                            results["errors"] += 1
+                            print(f"  Write error: {e}", file=sys.stderr)
+
+            except Exception as e:
+                print(f"  Scrape error for r/{subreddit} [{term}]: {e}", file=sys.stderr)
+                results["errors"] += 1
 
     return results
 
 
 if __name__ == "__main__":
     cycle_id = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-    print(f"Starting Reddit web-scraper for cycle {cycle_id}...")
+    print(f"Starting Reddit scrape (trudax) for cycle {cycle_id}...")
+    print(f"  {len(SUBREDDITS)} subs x {len(SEARCH_TERMS)} terms = {len(SUBREDDITS) * len(SEARCH_TERMS)} searches")
     stats = scrape_reddit(cycle_id)
     print(json.dumps(stats, indent=2))
