@@ -4,13 +4,14 @@ V7 Pipeline — HackerNews Pain Point Scraper via Apify
 import os
 import json
 import sys
+import time
 from datetime import datetime
 from apify_client import ApifyClient
 from supabase import create_client
 
-APIFY_API_KEY = os.environ["APIFY_API_KEY"]
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+APIFY_API_KEY = os.environ["APIFY_API_KEY"].strip()
+SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
+SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"].strip()
 
 SEARCH_QUERIES = [
     "Show HN", "Ask HN need", "frustrated with",
@@ -58,16 +59,43 @@ def scrape_hn(cycle_id: int) -> dict:
                 sb.table("pain_points").insert(record).execute()
                 results["written"] += 1
             except Exception as e:
-                results["errors"] += 1
-                print(f"  Write error: {e}", file=sys.stderr)
+                if "23505" in str(e) or "duplicate" in str(e).lower():
+                    results.setdefault("duplicates", 0)
+                    results["duplicates"] += 1
+                else:
+                    results["errors"] += 1
+                    print(f"  Write error: {e}", file=sys.stderr)
     except Exception as e:
         print(f"  HN scrape error: {e}", file=sys.stderr)
 
     return results
 
 
-if __name__ == "__main__":
+MIN_TARGET = 300
+MAX_RETRIES = 3
+RETRY_DELAY = 300  # 5 minutes
+
+
+def main():
     cycle_id = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-    print(f"Starting HN scrape for cycle {cycle_id}...")
-    stats = scrape_hn(cycle_id)
-    print(json.dumps(stats, indent=2))
+    print(f"Starting HN Apify scrape for cycle {cycle_id}...")
+
+    result = {"written": 0}
+    for attempt in range(1, MAX_RETRIES + 1):
+        result = scrape_hn(cycle_id)
+        if result["written"] >= MIN_TARGET:
+            print(f"✅ HN: {result['written']} records (target: {MIN_TARGET})")
+            break
+        print(f"⚠️ Attempt {attempt}/{MAX_RETRIES}: only {result['written']}/{MIN_TARGET}")
+        if attempt < MAX_RETRIES:
+            print(f"  Retrying in {RETRY_DELAY}s...")
+            time.sleep(RETRY_DELAY)
+    else:
+        print(f"❌ HN: {result['written']}/{MIN_TARGET} after {MAX_RETRIES} attempts")
+
+    print(json.dumps(result, indent=2))
+    print(f"RESULT:{json.dumps(result)}")
+
+
+if __name__ == "__main__":
+    main()

@@ -7,6 +7,7 @@ Usage: python3 apify_reddit.py [cycle_id]
 import os
 import json
 import sys
+import time
 from datetime import datetime, timezone
 from apify_client import ApifyClient
 try:
@@ -16,9 +17,9 @@ except ImportError:
     from supabase_lite import SupabaseLite, DuplicateError
     USE_LITE = True
 
-APIFY_API_KEY = os.environ["APIFY_API_KEY"]
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+APIFY_API_KEY = os.environ["APIFY_API_KEY"].strip()
+SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
+SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"].strip()
 
 ACTOR_ID = "trudax/reddit-scraper"
 
@@ -108,9 +109,33 @@ def scrape_reddit(cycle_id: int) -> dict:
     return results
 
 
-if __name__ == "__main__":
+MIN_TARGET = 500
+MAX_RETRIES = 3
+RETRY_DELAY = 300  # 5 minutes
+
+
+def main():
     cycle_id = int(sys.argv[1]) if len(sys.argv) > 1 else 1
     print(f"Starting Reddit scrape (trudax) for cycle {cycle_id}...")
     print(f"  {len(SUBREDDITS)} subs x {len(SEARCH_TERMS)} terms = {len(SUBREDDITS) * len(SEARCH_TERMS)} searches")
-    stats = scrape_reddit(cycle_id)
-    print(json.dumps(stats, indent=2))
+
+    result = {"written": 0}
+    for attempt in range(1, MAX_RETRIES + 1):
+        result = scrape_reddit(cycle_id)
+        if result["written"] >= MIN_TARGET:
+            print(f"✅ Reddit: {result['written']} records (target: {MIN_TARGET})")
+            break
+        print(f"⚠️ Attempt {attempt}/{MAX_RETRIES}: only {result['written']}/{MIN_TARGET}")
+        if attempt < MAX_RETRIES:
+            print(f"  Retrying in {RETRY_DELAY}s...")
+            time.sleep(RETRY_DELAY)
+    else:
+        print(f"❌ Reddit: {result['written']}/{MIN_TARGET} after {MAX_RETRIES} attempts")
+
+    print(json.dumps(result, indent=2))
+    # Machine-readable result line for DataCollector parsing
+    print(f"RESULT:{json.dumps(result)}")
+
+
+if __name__ == "__main__":
+    main()

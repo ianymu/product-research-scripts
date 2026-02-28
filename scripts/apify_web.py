@@ -7,6 +7,7 @@ Usage: python3 apify_web.py [cycle_id]
 import os
 import json
 import sys
+import time
 from datetime import datetime, timezone
 from apify_client import ApifyClient
 try:
@@ -192,8 +193,31 @@ def scrape_indiehackers(cycle_id: int) -> dict:
     return results
 
 
-if __name__ == "__main__":
+MIN_TARGET = 300
+MAX_RETRIES = 3
+RETRY_DELAY = 300  # 5 minutes
+
+
+def main():
     cycle_id = int(sys.argv[1]) if len(sys.argv) > 1 else 1
     print(f"Starting IndieHackers scrape for cycle {cycle_id}...")
-    stats = scrape_indiehackers(cycle_id)
-    print(json.dumps(stats, indent=2))
+
+    result = {"written": 0}
+    for attempt in range(1, MAX_RETRIES + 1):
+        result = scrape_indiehackers(cycle_id)
+        if result["written"] >= MIN_TARGET:
+            print(f"✅ IH: {result['written']} records (target: {MIN_TARGET})")
+            break
+        print(f"⚠️ Attempt {attempt}/{MAX_RETRIES}: only {result['written']}/{MIN_TARGET}")
+        if attempt < MAX_RETRIES:
+            print(f"  Retrying in {RETRY_DELAY}s...")
+            time.sleep(RETRY_DELAY)
+    else:
+        print(f"❌ IH: {result['written']}/{MIN_TARGET} after {MAX_RETRIES} attempts")
+
+    print(json.dumps(result, indent=2))
+    print(f"RESULT:{json.dumps(result)}")
+
+
+if __name__ == "__main__":
+    main()
