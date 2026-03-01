@@ -25,18 +25,64 @@ ACTOR_ID = "apidojo/tweet-scraper"
 MAX_AGE_DAYS = 15
 MAX_TWEETS_PER_SEARCH = 30
 
+# --- LLM pre-filter for content relevance ---
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+ENABLE_LLM_FILTER = bool(OPENAI_API_KEY)  # auto-enable if key available
+
+_LLM_FILTER_PROMPT = """You are a product pain-point filter. Given a tweet, answer YES or NO.
+YES = This tweet describes a real user pain point, product frustration, feature request, tool comparison, or SaaS/software complaint that could inspire a paid product.
+NO = This is political, social commentary, entertainment, personal life, meme, joke, vague wish, or unrelated to software/products.
+
+Only reply YES or NO. Nothing else."""
+
+
+def passes_llm_filter(text: str) -> bool:
+    """Quick GPT-4.1-mini check: is this a product pain point?"""
+    if not ENABLE_LLM_FILTER or not text.strip():
+        return True  # skip filter if no API key
+    try:
+        import urllib.request
+        payload = json.dumps({
+            "model": "gpt-4.1-mini",
+            "messages": [
+                {"role": "system", "content": _LLM_FILTER_PROMPT},
+                {"role": "user", "content": text[:500]}
+            ],
+            "max_tokens": 3,
+            "temperature": 0,
+        }).encode()
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        result = json.loads(resp.read())
+        answer = result["choices"][0]["message"]["content"].strip().upper()
+        return answer.startswith("YES")
+    except Exception:
+        return True  # on error, let it through
+
 # --- Account monitoring via "from:username" search ---
 TIER0_ACCOUNTS = [
+    # Indie makers & builders (high product-pain signal)
     "levelsio", "dannypostma", "marclouvion", "mckaywrigley",
-    "tibo_maker", "OpenAI", "AnthropicAI", "GoogleDeepMind",
-    "xai", "MistralAI", "perplexity_ai", "karpathy",
-    "sama", "ylecun", "drjimfan", "AndrewYNg",
-    "ProductHunt", "ycombinator", "paulg", "naval", "garrytan",
+    "tibo_maker", "thepatwalls", "marc_louvion", "yaborumal",
+    # AI labs (product announcements & user pain reactions)
+    "OpenAI", "AnthropicAI", "cursor_ai",
+    # Builder community voices
+    "ProductHunt", "ycombinator", "garrytan",
+    # AI builder/maker focused
+    "swyx", "danshipper", "theRundownAI", "aiaborumal",
 ]
 
 FILTERED_ACCOUNTS = [
-    "bcherny", "_catwu", "cursor_ai", "_akhaliq", "rowancheung",
-    "lennysan", "gregisenberg", "Jason",
+    "bcherny", "_catwu", "_akhaliq", "rowancheung",
+    "lennysan", "gregisenberg", "Jason", "karpathy",
+    "drjimfan", "AndrewYNg",
 ]
 
 FILTER_RULES = {
@@ -47,12 +93,18 @@ FILTER_RULES = {
 }
 
 # --- Keyword searches for toC/fundable product signals ---
+# Each query is AND-gated with product/tech context to avoid political/social noise
 KEYWORD_SEARCHES = [
-    '"I wish there was" OR "someone should build" OR "why is there no"',
-    '"paying for" AND ("app" OR "tool") AND ("frustrating" OR "broken" OR "terrible")',
-    '"switched from" AND ("better" OR "alternative" OR "replaced")',
-    '"went viral" OR "million users" OR "addicted to" AND ("app" OR "product")',
-    '"shut down" OR "pivoted" OR "raised funding" AND ("startup" OR "product")',
+    # Pain signals with product context
+    '("I wish there was" OR "someone should build" OR "why is there no") AND ("app" OR "tool" OR "SaaS" OR "software" OR "plugin" OR "extension" OR "API")',
+    # Paying users frustrated with existing tools
+    '("paying" OR "subscription" OR "$" OR "per month") AND ("frustrating" OR "broken" OR "terrible" OR "overpriced" OR "switching") AND ("app" OR "tool" OR "software")',
+    # Product switching signals
+    '("switched from" OR "migrated from" OR "replaced" OR "ditched") AND ("better" OR "cheaper" OR "faster" OR "alternative") AND ("tool" OR "app" OR "SaaS")',
+    # Builder/launch signals
+    '("just launched" OR "just shipped" OR "built this" OR "side project") AND ("users" OR "MRR" OR "revenue" OR "waitlist" OR "beta")',
+    # AI tool specific pain
+    '("AI tool" OR "AI agent" OR "LLM" OR "ChatGPT" OR "Claude" OR "Cursor") AND ("broken" OR "expensive" OR "unreliable" OR "limitation" OR "frustrating" OR "wish")',
 ]
 
 
@@ -113,6 +165,11 @@ def scrape_x(cycle_id: int) -> dict:
 
         author = source_username or item.get("author", {}).get("userName", "") or "unknown"
         text = item.get("text", "") or item.get("full_text", "") or ""
+
+        # LLM content relevance filter (skip noise before writing to DB)
+        if not passes_llm_filter(text):
+            results["filtered_out"] += 1
+            return
 
         record = {
             "cycle_id": cycle_id,
