@@ -10,12 +10,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from apify_client import ApifyClient
-try:
-    from supabase import create_client
-    USE_LITE = False
-except ImportError:
-    from supabase_lite import SupabaseLite, DuplicateError
-    USE_LITE = True
+from supabase import create_client
 
 APIFY_API_KEY = os.environ["APIFY_API_KEY"].strip()
 SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
@@ -25,64 +20,23 @@ ACTOR_ID = "apidojo/tweet-scraper"
 MAX_AGE_DAYS = 15
 MAX_TWEETS_PER_SEARCH = 30
 
-# --- LLM pre-filter for content relevance ---
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
-ENABLE_LLM_FILTER = bool(OPENAI_API_KEY)  # auto-enable if key available
-
-_LLM_FILTER_PROMPT = """You are a product pain-point filter. Given a tweet, answer YES or NO.
-YES = This tweet describes a real user pain point, product frustration, feature request, tool comparison, or SaaS/software complaint that could inspire a paid product.
-NO = This is political, social commentary, entertainment, personal life, meme, joke, vague wish, or unrelated to software/products.
-
-Only reply YES or NO. Nothing else."""
-
-
-def passes_llm_filter(text: str) -> bool:
-    """Quick GPT-4.1-mini check: is this a product pain point?"""
-    if not ENABLE_LLM_FILTER or not text.strip():
-        return True  # skip filter if no API key
-    try:
-        import urllib.request
-        payload = json.dumps({
-            "model": "gpt-4.1-mini",
-            "messages": [
-                {"role": "system", "content": _LLM_FILTER_PROMPT},
-                {"role": "user", "content": text[:500]}
-            ],
-            "max_tokens": 3,
-            "temperature": 0,
-        }).encode()
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json",
-            },
-        )
-        resp = urllib.request.urlopen(req, timeout=10)
-        result = json.loads(resp.read())
-        answer = result["choices"][0]["message"]["content"].strip().upper()
-        return answer.startswith("YES")
-    except Exception:
-        return True  # on error, let it through
-
 # --- Account monitoring via "from:username" search ---
+# Removed noise accounts (politics/philosophy/academic): ylecun, Jason, garrytan,
+# paulg, karpathy, drjimfan, AndrewYNg, sama, naval
 TIER0_ACCOUNTS = [
-    # Indie makers & builders (high product-pain signal)
-    "levelsio", "dannypostma", "marclouvion", "mckaywrigley",
-    "tibo_maker", "thepatwalls", "marc_louvion", "yaborumal",
-    # AI labs (product announcements & user pain reactions)
-    "OpenAI", "AnthropicAI", "cursor_ai",
-    # Builder community voices
-    "ProductHunt", "ycombinator", "garrytan",
-    # AI builder/maker focused
-    "swyx", "danshipper", "theRundownAI", "aiaborumal",
+    # Indie makers (core product signal)
+    "levelsio", "dannypostma", "marclouvion", "mckaywrigley", "tibo_maker",
+    # AI product companies
+    "OpenAI", "AnthropicAI", "GoogleDeepMind", "xai", "MistralAI", "perplexity_ai",
+    # Product discovery
+    "ProductHunt", "ycombinator",
+    # Product/growth
+    "gregisenberg",
 ]
 
 FILTERED_ACCOUNTS = [
-    "bcherny", "_catwu", "_akhaliq", "rowancheung",
-    "lennysan", "gregisenberg", "Jason", "karpathy",
-    "drjimfan", "AndrewYNg",
+    "bcherny", "_catwu", "cursor_ai", "_akhaliq", "rowancheung",
+    "lennysan",
 ]
 
 FILTER_RULES = {
@@ -93,18 +47,13 @@ FILTER_RULES = {
 }
 
 # --- Keyword searches for toC/fundable product signals ---
-# Each query is AND-gated with product/tech context to avoid political/social noise
+# Each search uses AND ("app" OR "tool" OR "software" OR "product") to filter noise
 KEYWORD_SEARCHES = [
-    # Pain signals with product context
-    '("I wish there was" OR "someone should build" OR "why is there no") AND ("app" OR "tool" OR "SaaS" OR "software" OR "plugin" OR "extension" OR "API")',
-    # Paying users frustrated with existing tools
-    '("paying" OR "subscription" OR "$" OR "per month") AND ("frustrating" OR "broken" OR "terrible" OR "overpriced" OR "switching") AND ("app" OR "tool" OR "software")',
-    # Product switching signals
-    '("switched from" OR "migrated from" OR "replaced" OR "ditched") AND ("better" OR "cheaper" OR "faster" OR "alternative") AND ("tool" OR "app" OR "SaaS")',
-    # Builder/launch signals
-    '("just launched" OR "just shipped" OR "built this" OR "side project") AND ("users" OR "MRR" OR "revenue" OR "waitlist" OR "beta")',
-    # AI tool specific pain
-    '("AI tool" OR "AI agent" OR "LLM" OR "ChatGPT" OR "Claude" OR "Cursor") AND ("broken" OR "expensive" OR "unreliable" OR "limitation" OR "frustrating" OR "wish")',
+    '"I wish there was" AND ("app" OR "tool" OR "software" OR "product")',
+    '"someone should build" AND ("app" OR "tool" OR "software" OR "product")',
+    '"paying for" AND ("app" OR "tool" OR "software") AND ("frustrating" OR "broken" OR "terrible")',
+    '"switched from" AND ("app" OR "tool" OR "software") AND ("better" OR "alternative")',
+    '"launched" AND ("app" OR "product" OR "tool") AND ("users" OR "signup" OR "waitlist")',
 ]
 
 
@@ -135,7 +84,7 @@ def run_search(client, query, max_tweets=MAX_TWEETS_PER_SEARCH):
 def scrape_x(cycle_id: int) -> dict:
     """Scrape X/Twitter via Apify and write to Supabase."""
     client = ApifyClient(APIFY_API_KEY)
-    sb = SupabaseLite(SUPABASE_URL, SUPABASE_KEY) if USE_LITE else create_client(SUPABASE_URL, SUPABASE_KEY)
+    sb = create_client(SUPABASE_URL, SUPABASE_KEY)
     cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
 
     results = {"total": 0, "written": 0, "duplicates": 0, "errors": 0, "filtered_out": 0}
@@ -166,11 +115,6 @@ def scrape_x(cycle_id: int) -> dict:
         author = source_username or item.get("author", {}).get("userName", "") or "unknown"
         text = item.get("text", "") or item.get("full_text", "") or ""
 
-        # LLM content relevance filter (skip noise before writing to DB)
-        if not passes_llm_filter(text):
-            results["filtered_out"] += 1
-            return
-
         record = {
             "cycle_id": cycle_id,
             "source": "twitter",
@@ -183,13 +127,10 @@ def scrape_x(cycle_id: int) -> dict:
             "collected_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
-            if USE_LITE:
-                sb.insert("pain_points", record)
-            else:
-                sb.table("pain_points").insert(record).execute()
+            sb.table("pain_points").insert(record).execute()
             results["written"] += 1
         except Exception as e:
-            if "23505" in str(e) or "duplicate" in str(e).lower() or "DuplicateError" in type(e).__name__:
+            if "23505" in str(e) or "duplicate" in str(e).lower():
                 results["duplicates"] += 1
             else:
                 results["errors"] += 1
