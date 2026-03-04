@@ -13,6 +13,11 @@ import json
 import subprocess
 from datetime import datetime, timedelta, timezone
 
+# Ensure telegram_utils is importable (lives at ~/telegram_utils.py on EC2)
+sys.path.insert(0, os.path.expanduser("~"))
+sys.path.insert(0, os.path.expanduser("~/scripts"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 # --- Environment ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
@@ -66,10 +71,10 @@ def main():
     cycle_info = "?"
     v7_status = "grey"
     try:
-        cycles = sb.table("cycles").select("*").order("id", desc=True).limit(1).execute()
+        cycles = sb.table("cycles").select("*").order("cycle_id", desc=True).limit(1).execute()
         if cycles.data:
             c = cycles.data[0]
-            cid = c.get("id", "?")
+            cid = c.get("cycle_id", "?")
 
             pp = sb.table("pain_points").select("id", count="exact").eq("cycle_id", cid).execute()
             pp_count = pp.count or 0
@@ -130,7 +135,7 @@ def main():
     lines.append(f"Plan D: Paused [{health_icon('grey')}]")
 
     # --- Plan E (V7 API) ---
-    api_code = check_service("curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/health")
+    api_code = check_service("curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/v1/health")
     if api_code == "200":
         pe_status = "running"
         pe_info = "API :8080"
