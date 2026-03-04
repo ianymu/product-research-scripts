@@ -99,14 +99,15 @@ Output ONLY valid JSON (no markdown, no explanation) in this exact format:
 
 Requirements:
 - All search terms must be in ENGLISH
-- Reddit: 5-10 relevant subreddits + 10-15 search terms
+- Reddit: 5-10 relevant subreddits (just the name, NO "r/" prefix, e.g. "startups" not "r/startups") + 10-15 search terms
 - HN: 8-12 Algolia search queries
 - IH: 8-12 search terms
 - X/Twitter: 5-8 advanced search queries using AND/OR syntax
 - Cover: user pain points, competitor names, related scenarios, emotional expressions
 - Include trigger phrases: "pain point", "frustrating", "wish there was", "looking for", "alternative to"
 - Include specific product names and industry jargon relevant to the topic
-- Include signals: "accountability", "loneliness", "community", "co-working" etc. as relevant"""
+- Include signals: "accountability", "loneliness", "community", "co-working" etc. as relevant
+- IMPORTANT: Subreddit names must NOT include "r/" prefix"""
 
     print("  Calling Claude Haiku to generate queries...")
     response = client.messages.create(
@@ -164,7 +165,7 @@ def run_collector(script_name: str, cycle_id: int, queries_file: str) -> dict:
             cmd,
             capture_output=True,
             text=True,
-            timeout=600,  # 10 min per collector
+            timeout=900,  # 15 min per collector (Apify actors can be slow)
             env=os.environ.copy(),
         )
 
@@ -185,7 +186,7 @@ def run_collector(script_name: str, cycle_id: int, queries_file: str) -> dict:
 
         return {"written": 0, "errors": 1, "note": f"exit_code={proc.returncode}"}
     except subprocess.TimeoutExpired:
-        print(f"  [{script_name}] TIMEOUT after 600s")
+        print(f"  [{script_name}] TIMEOUT after 900s")
         return {"written": 0, "errors": 1, "note": "timeout"}
     except Exception as e:
         print(f"  [{script_name}] EXCEPTION: {e}")
@@ -194,7 +195,12 @@ def run_collector(script_name: str, cycle_id: int, queries_file: str) -> dict:
 
 def run_stage2(cycle_id: int) -> bool:
     """Run v7_stage2_full.py for the given cycle."""
-    script_path = os.path.join(SCRIPTS_DIR, "v7_stage2_full.py")
+    # v7_stage2_full.py lives at ~/v7_stage2_full.py (not in ~/scripts/)
+    candidates = [
+        os.path.expanduser("~/v7_stage2_full.py"),
+        os.path.join(SCRIPTS_DIR, "v7_stage2_full.py"),
+    ]
+    script_path = next((p for p in candidates if os.path.exists(p)), candidates[0])
     cmd = ["python3", script_path, "--cycle", str(cycle_id)]
 
     print(f"\n{'='*60}")

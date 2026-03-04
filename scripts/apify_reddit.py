@@ -55,6 +55,8 @@ if _args.queries_file:
     with open(_args.queries_file) as _f:
         _custom = json.load(_f)
     SUBREDDITS = _custom.get("subreddits", DEFAULT_SUBREDDITS)
+    # Strip r/ prefix if LLM included it (e.g. "r/startups" → "startups")
+    SUBREDDITS = [s.removeprefix("r/") for s in SUBREDDITS]
     SEARCH_TERMS = _custom.get("search_terms", DEFAULT_SEARCH_TERMS)
 else:
     SUBREDDITS = DEFAULT_SUBREDDITS
