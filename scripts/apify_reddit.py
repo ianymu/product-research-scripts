@@ -2,12 +2,15 @@
 V7 Pipeline — Reddit Pain Point Scraper via trudax/reddit-scraper-lite
 Uses residential proxy (built-in) to avoid 403. Batches searches per subreddit.
 
-Usage: python3 apify_reddit.py [cycle_id]
+Usage:
+  python3 apify_reddit.py [cycle_id]                     # daily cron (hardcoded queries)
+  python3 apify_reddit.py 2001 --queries-file q.json     # focused collection (custom queries)
 """
 import os
 import json
 import sys
 import time
+import argparse
 from datetime import datetime, timezone
 from apify_client import ApifyClient
 from supabase import create_client
@@ -18,14 +21,14 @@ SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"].strip()
 
 ACTOR_ID = "trudax/reddit-scraper-lite"
 
-SUBREDDITS = [
+DEFAULT_SUBREDDITS = [
     # Original startup/tech subs
     "SaaS", "startups", "Entrepreneur", "indiehackers",
     # Consumer-facing subs (toC product discovery)
     "productivity", "personalfinance", "fitness", "selfimprovement",
     "apps", "technology", "Futurology", "ArtificialIntelligence",
 ]
-SEARCH_TERMS = [
+DEFAULT_SEARCH_TERMS = [
     # Original 9 keywords (kept)
     "pain point", "frustrating", "wish there was",
     "paying for", "need a tool", "hate using",
@@ -40,6 +43,22 @@ SEARCH_TERMS = [
 ]
 MAX_POSTS_PER_SUB = 100
 TIME_RANGE = "week"
+
+# Parse CLI args
+parser = argparse.ArgumentParser(description="V7 Reddit Scraper")
+parser.add_argument("cycle_id", nargs="?", type=int, default=1)
+parser.add_argument("--queries-file", type=str, default=None,
+                    help="JSON file with custom subreddits/search_terms for focused collection")
+_args = parser.parse_args()
+
+if _args.queries_file:
+    with open(_args.queries_file) as _f:
+        _custom = json.load(_f)
+    SUBREDDITS = _custom.get("subreddits", DEFAULT_SUBREDDITS)
+    SEARCH_TERMS = _custom.get("search_terms", DEFAULT_SEARCH_TERMS)
+else:
+    SUBREDDITS = DEFAULT_SUBREDDITS
+    SEARCH_TERMS = DEFAULT_SEARCH_TERMS
 
 
 def scrape_reddit(cycle_id: int) -> dict:
@@ -124,9 +143,11 @@ RETRY_DELAY = 120  # 2 minutes
 
 
 def main():
-    cycle_id = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+    cycle_id = _args.cycle_id
     print(f"Starting Reddit scrape (lite + residential proxy) for cycle {cycle_id}...")
     print(f"  {len(SUBREDDITS)} subs, {len(SEARCH_TERMS)} terms, batched = {len(SUBREDDITS)} actor runs")
+    if _args.queries_file:
+        print(f"  [FOCUSED] Using custom queries from {_args.queries_file}")
 
     result = {"written": 0}
     for attempt in range(1, MAX_RETRIES + 1):

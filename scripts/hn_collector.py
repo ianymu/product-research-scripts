@@ -2,28 +2,26 @@
 V7 Pipeline — HackerNews Pain Point Collector via Algolia API
 Replaces apify_hn.py. Free, no API key required.
 
-Usage: python3 hn_collector.py [cycle_id]
+Usage:
+  python3 hn_collector.py [cycle_id]                     # daily cron (hardcoded queries)
+  python3 hn_collector.py 2001 --queries-file q.json     # focused collection (custom queries)
 """
 import os
 import json
 import sys
 import time
+import argparse
 from datetime import datetime, timedelta, timezone
 
 import requests
-try:
-    from supabase import create_client
-    USE_LITE = False
-except ImportError:
-    from supabase_lite import SupabaseLite, DuplicateError
-    USE_LITE = True
+from supabase import create_client
 
 SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"].strip()
 
 ALGOLIA_BASE = "https://hn.algolia.com/api/v1/search"
 
-SEARCH_QUERIES = [
+DEFAULT_SEARCH_QUERIES = [
     # Original 6 queries (kept)
     "Show HN", "Ask HN need", "frustrated with",
     "looking for tool", "built this because", "pain point",
@@ -34,13 +32,24 @@ SEARCH_QUERIES = [
 HITS_PER_PAGE = 100
 MAX_ITEMS = 1200
 
+# Parse CLI args
+parser = argparse.ArgumentParser(description="V7 HN Collector")
+parser.add_argument("cycle_id", nargs="?", type=int, default=1)
+parser.add_argument("--queries-file", type=str, default=None,
+                    help="JSON file with custom queries for focused collection")
+_args = parser.parse_args()
+
+if _args.queries_file:
+    with open(_args.queries_file) as _f:
+        _custom = json.load(_f)
+    SEARCH_QUERIES = _custom.get("queries", DEFAULT_SEARCH_QUERIES)
+else:
+    SEARCH_QUERIES = DEFAULT_SEARCH_QUERIES
+
 
 def scrape_hn(cycle_id: int) -> dict:
     """Scrape HackerNews via Algolia API and write to Supabase."""
-    if USE_LITE:
-        sb = SupabaseLite(SUPABASE_URL, SUPABASE_KEY)
-    else:
-        sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+    sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
     results = {"total": 0, "written": 0, "duplicates": 0, "errors": 0}
     seen_ids = set()
@@ -82,13 +91,10 @@ def scrape_hn(cycle_id: int) -> dict:
                 }
 
                 try:
-                    if USE_LITE:
-                        sb.insert("pain_points", record)
-                    else:
-                        sb.table("pain_points").insert(record).execute()
+                    sb.table("pain_points").insert(record).execute()
                     results["written"] += 1
                 except Exception as e:
-                    if "23505" in str(e) or "duplicate" in str(e).lower() or "DuplicateError" in type(e).__name__:
+                    if "23505" in str(e) or "duplicate" in str(e).lower():
                         results["duplicates"] += 1
                     else:
                         results["errors"] += 1
@@ -110,8 +116,10 @@ RETRY_DELAY = 300  # 5 minutes
 
 
 def main():
-    cycle_id = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+    cycle_id = _args.cycle_id
     print(f"Starting HN Algolia scrape for cycle {cycle_id}...")
+    if _args.queries_file:
+        print(f"  [FOCUSED] Using custom queries from {_args.queries_file}")
 
     result = {"written": 0}
     for attempt in range(1, MAX_RETRIES + 1):

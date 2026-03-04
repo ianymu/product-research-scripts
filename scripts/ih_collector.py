@@ -2,11 +2,14 @@
 V7 Pipeline — IndieHackers Collector via Algolia Search API (free, no Apify needed)
 Uses IH's public Algolia search-only key to query discussions directly.
 
-Usage: python3 ih_collector.py [cycle_id]
+Usage:
+  python3 ih_collector.py [cycle_id]                     # daily cron (hardcoded queries)
+  python3 ih_collector.py 2001 --queries-file q.json     # focused collection (custom queries)
 """
 import os
 import json
 import sys
+import argparse
 import requests
 from datetime import datetime, timezone
 from supabase import create_client
@@ -19,7 +22,7 @@ ALGOLIA_API_KEY = "5140dac5e87f47346abbda1a34ee70c3"
 ALGOLIA_INDEX = "discussions"
 ALGOLIA_URL = f"https://{ALGOLIA_APP_ID}-dsn.algolia.net/1/indexes/{ALGOLIA_INDEX}/query"
 
-SEARCH_TERMS = [
+DEFAULT_SEARCH_TERMS = [
     "pain point", "frustrating", "wish there was",
     "paying for", "need a tool", "hate using",
     "looking for", "alternative to", "struggling with",
@@ -30,6 +33,20 @@ SEARCH_TERMS = [
     "changed my life", "million users",
 ]
 HITS_PER_QUERY = 50
+
+# Parse CLI args
+parser = argparse.ArgumentParser(description="V7 IndieHackers Collector")
+parser.add_argument("cycle_id", nargs="?", type=int, default=1)
+parser.add_argument("--queries-file", type=str, default=None,
+                    help="JSON file with custom search_terms for focused collection")
+_args = parser.parse_args()
+
+if _args.queries_file:
+    with open(_args.queries_file) as _f:
+        _custom = json.load(_f)
+    SEARCH_TERMS = _custom.get("search_terms", DEFAULT_SEARCH_TERMS)
+else:
+    SEARCH_TERMS = DEFAULT_SEARCH_TERMS
 
 
 def collect_ih(cycle_id: int) -> dict:
@@ -95,9 +112,11 @@ def collect_ih(cycle_id: int) -> dict:
 
 
 def main():
-    cycle_id = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+    cycle_id = _args.cycle_id
     print(f"Starting IndieHackers Algolia collection for cycle {cycle_id}...")
     print(f"  {len(SEARCH_TERMS)} queries x {HITS_PER_QUERY} hits/query")
+    if _args.queries_file:
+        print(f"  [FOCUSED] Using custom queries from {_args.queries_file}")
 
     result = collect_ih(cycle_id)
     print(f"\nIH result: {result['written']} written, {result['duplicates']} dups, {result['errors']} errors")

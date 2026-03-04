@@ -2,12 +2,15 @@
 V7 Pipeline — X/Twitter Scraper via Apify (apidojo/tweet-scraper)
 Uses searchTerms for both keyword search AND account monitoring (via from:username).
 
-Usage: python3 apify_x.py [cycle_id]
+Usage:
+  python3 apify_x.py [cycle_id]                     # daily cron (hardcoded queries)
+  python3 apify_x.py 2001 --queries-file q.json     # focused collection (custom queries)
 """
 import os
 import json
 import sys
 import time
+import argparse
 from datetime import datetime, timedelta, timezone
 from apify_client import ApifyClient
 from supabase import create_client
@@ -21,7 +24,7 @@ MAX_AGE_DAYS = 15
 MAX_TWEETS_PER_SEARCH = 30
 
 # --- Account monitoring via "from:username" search ---
-# Removed noise accounts (politics/philosophy/academic): ylecun, Jason, garrytan,
+# Removed noise accounts (politics/philosophy/academic): ylecun, Jason, garrytar,
 # paulg, karpathy, drjimfan, AndrewYNg, sama, naval
 TIER0_ACCOUNTS = [
     # Indie makers (core product signal)
@@ -47,14 +50,27 @@ FILTER_RULES = {
 }
 
 # --- Keyword searches for toC/fundable product signals ---
-# Each search uses AND ("app" OR "tool" OR "software" OR "product") to filter noise
-KEYWORD_SEARCHES = [
+DEFAULT_KEYWORD_SEARCHES = [
     '"I wish there was" AND ("app" OR "tool" OR "software" OR "product")',
     '"someone should build" AND ("app" OR "tool" OR "software" OR "product")',
     '"paying for" AND ("app" OR "tool" OR "software") AND ("frustrating" OR "broken" OR "terrible")',
     '"switched from" AND ("app" OR "tool" OR "software") AND ("better" OR "alternative")',
     '"launched" AND ("app" OR "product" OR "tool") AND ("users" OR "signup" OR "waitlist")',
 ]
+
+# Parse CLI args
+parser = argparse.ArgumentParser(description="V7 X/Twitter Scraper")
+parser.add_argument("cycle_id", nargs="?", type=int, default=1)
+parser.add_argument("--queries-file", type=str, default=None,
+                    help="JSON file with custom keyword_searches for focused collection")
+_args = parser.parse_args()
+
+if _args.queries_file:
+    with open(_args.queries_file) as _f:
+        _custom = json.load(_f)
+    KEYWORD_SEARCHES = _custom.get("keyword_searches", DEFAULT_KEYWORD_SEARCHES)
+else:
+    KEYWORD_SEARCHES = DEFAULT_KEYWORD_SEARCHES
 
 
 def passes_filter(tweet: dict) -> bool:
@@ -175,8 +191,10 @@ RETRY_DELAY = 300  # 5 minutes
 
 
 def main():
-    cycle_id = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+    cycle_id = _args.cycle_id
     print(f"Starting X/Twitter scrape for cycle {cycle_id}...")
+    if _args.queries_file:
+        print(f"  [FOCUSED] Using custom queries from {_args.queries_file}")
 
     result = {"written": 0}
     for attempt in range(1, MAX_RETRIES + 1):
