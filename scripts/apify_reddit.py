@@ -143,6 +143,11 @@ MIN_TARGET = 300
 MAX_RETRIES = 2
 RETRY_DELAY = 120  # 2 minutes
 
+# Focused mode: run once, no retry (niche topics won't hit 300/platform)
+if _args.queries_file:
+    MIN_TARGET = 0
+    MAX_RETRIES = 1
+
 
 def main():
     cycle_id = _args.cycle_id
