@@ -1,6 +1,7 @@
 """
 V7 Pipeline — Landing Page Generator
 Generates a validation LP with email capture, deploys to Vercel.
+Supports Chinese (zh) and English (en).
 """
 import os
 import json
@@ -12,10 +13,42 @@ SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
 SUPABASE_ANON_KEY = os.environ["SUPABASE_ANON_KEY"].strip()
 VERCEL_TOKEN = os.environ.get("VERCEL_TOKEN", "").strip()
 
+# i18n strings
+I18N = {
+    "zh": {
+        "features_heading": "你将获得",
+        "social_proof": "\u201c一个人创业很难，但不必一个人扛。\u201d",
+        "social_proof_sub": "\u2014\u2014 基于 200+ 独立创业者真实痛点分析",
+        "early_access": "抢先体验",
+        "early_access_sub": "加入正在寻找同行者的创业者。",
+        "join_btn": "加入",
+        "success_msg": "你已加入候补名单！我们很快联系你。",
+        "error_msg": "出了点问题，再试一次？",
+        "footer": "V7 Pipeline 产品验证实验",
+        "placeholder": "你的邮箱",
+    },
+    "en": {
+        "features_heading": "What You Get",
+        "social_proof": "\u201cBuilding alone is hard. Building together changes everything.\u201d",
+        "social_proof_sub": "\u2014 Based on 200+ solopreneur pain points we analyzed",
+        "early_access": "Get Early Access",
+        "early_access_sub": "Join founders who are tired of building alone.",
+        "join_btn": "Join",
+        "success_msg": "You're in! We'll be in touch soon.",
+        "error_msg": "Something went wrong. Try again?",
+        "footer": "A V7 Pipeline validation experiment",
+        "placeholder": "your@email.com",
+    },
+}
+
 
 def generate_lp(direction_name: str, value_prop: str, features: list,
-                cta_text: str = "Join the Waitlist") -> str:
+                cta_text: str = "", lang: str = "en") -> str:
     """Generate LP HTML with Tailwind CSS and email capture."""
+    t = I18N.get(lang, I18N["en"])
+    if not cta_text:
+        cta_text = t["join_btn"]
+
     features_html = "\n".join([
         f"""<div class="p-6 bg-white rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition">
             <h3 class="font-semibold text-lg mb-2 text-gray-900">{f["title"]}</h3>
@@ -24,8 +57,10 @@ def generate_lp(direction_name: str, value_prop: str, features: list,
         for f in features
     ])
 
+    html_lang = "zh-CN" if lang == "zh" else "en"
+
     return f"""<!DOCTYPE html>
-<html lang="en">
+<html lang="{html_lang}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -49,36 +84,36 @@ def generate_lp(direction_name: str, value_prop: str, features: list,
 
     <!-- Features -->
     <div class="max-w-5xl mx-auto px-4 py-16">
-        <h2 class="text-3xl font-bold text-center mb-12">What You Get</h2>
+        <h2 class="text-3xl font-bold text-center mb-12">{t["features_heading"]}</h2>
         <div class="grid md:grid-cols-3 gap-6">{features_html}</div>
     </div>
 
     <!-- Social Proof -->
     <div class="bg-white py-12">
         <div class="max-w-3xl mx-auto px-4 text-center">
-            <p class="text-lg text-gray-600 italic">"Building alone is hard. Building together changes everything."</p>
-            <p class="mt-2 text-sm text-gray-400">— Based on 200+ solopreneur pain points we analyzed</p>
+            <p class="text-lg text-gray-600 italic">{t["social_proof"]}</p>
+            <p class="mt-2 text-sm text-gray-400">{t["social_proof_sub"]}</p>
         </div>
     </div>
 
     <!-- Signup -->
     <div id="signup" class="max-w-md mx-auto px-4 py-16 text-center">
-        <h2 class="text-3xl font-bold mb-4">Get Early Access</h2>
-        <p class="text-gray-600 mb-6">Join founders who are tired of building alone.</p>
+        <h2 class="text-3xl font-bold mb-4">{t["early_access"]}</h2>
+        <p class="text-gray-600 mb-6">{t["early_access_sub"]}</p>
         <form id="signup-form" class="flex gap-2">
-            <input type="email" id="email" placeholder="your@email.com"
+            <input type="email" id="email" placeholder="{t["placeholder"]}"
                 class="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" required>
             <button type="submit" class="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 font-semibold transition">
-                Join
+                {t["join_btn"]}
             </button>
         </form>
-        <p id="success" class="mt-4 text-green-600 hidden font-medium">You're in! We'll be in touch soon.</p>
-        <p id="error" class="mt-4 text-red-500 hidden">Something went wrong. Try again?</p>
+        <p id="success" class="mt-4 text-green-600 hidden font-medium">{t["success_msg"]}</p>
+        <p id="error" class="mt-4 text-red-500 hidden">{t["error_msg"]}</p>
     </div>
 
     <!-- Footer -->
     <footer class="text-center py-8 text-sm text-gray-400">
-        <p>A V7 Pipeline validation experiment</p>
+        <p>{t["footer"]}</p>
     </footer>
 
     <script>
@@ -110,7 +145,7 @@ def generate_lp(direction_name: str, value_prop: str, features: list,
                 console.error(err);
                 document.getElementById('error').classList.remove('hidden');
                 btn.disabled = false;
-                btn.textContent = 'Join';
+                btn.textContent = '{t["join_btn"]}';
             }}
         }});
     </script>
@@ -124,7 +159,6 @@ def deploy_to_vercel(html_content: str, project_name: str) -> str:
         print("VERCEL_TOKEN not set, skipping deployment", file=sys.stderr)
         return ""
 
-    # Encode file content
     encoded = base64.b64encode(html_content.encode()).decode()
 
     payload = {
@@ -156,11 +190,10 @@ def deploy_to_vercel(html_content: str, project_name: str) -> str:
 
 def generate_and_deploy(direction_name: str, value_prop: str, features: list,
                         project_name: str = "v7-lp-validation",
-                        deploy: bool = True) -> dict:
+                        deploy: bool = True, lang: str = "en") -> dict:
     """Generate LP HTML, save locally, optionally deploy to Vercel."""
-    html = generate_lp(direction_name, value_prop, features)
+    html = generate_lp(direction_name, value_prop, features, lang=lang)
 
-    # Save locally
     output_dir = os.path.join(os.path.dirname(__file__), "..", "output", "lp")
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, "index.html")
@@ -177,27 +210,39 @@ def generate_and_deploy(direction_name: str, value_prop: str, features: list,
 
 
 if __name__ == "__main__":
-    # Default: solopreneur community platform
-    name = sys.argv[1] if len(sys.argv) > 1 else "Solopreneur OS"
-    value_prop = sys.argv[2] if len(sys.argv) > 2 else (
-        "The accountability + community + growth platform for indie founders. "
-        "Stop building alone — join a tribe that holds you accountable, "
-        "shares growth tactics, and celebrates your wins."
-    )
-    default_features = [
-        {"title": "Accountability Partners", "desc": "Get matched with a founder at your stage. Weekly check-ins keep you on track."},
-        {"title": "Growth Playbooks", "desc": "Crowdsourced tactics from founders who've done it. No theory, just what works."},
-        {"title": "Build in Public", "desc": "Share progress, get feedback, attract your first users from the community."},
-        {"title": "Revenue Milestones", "desc": "Track MRR goals together. Celebrate $1K, $10K, $100K with your cohort."},
-        {"title": "AI Co-pilot", "desc": "AI-powered suggestions based on what worked for similar products in your niche."},
-        {"title": "Founder Matching", "desc": "Find co-founders, advisors, or beta testers. Filtered by stage, niche, and timezone."},
-    ]
+    # Default: solopreneur community platform (Chinese)
+    name = sys.argv[1] if len(sys.argv) > 1 else "SoloBuilder"
+    lang = sys.argv[2] if len(sys.argv) > 2 else "zh"
 
-    if len(sys.argv) > 3:
-        features = [{"title": f, "desc": ""} for f in sys.argv[3].split(",")]
+    if lang == "zh":
+        value_prop = (
+            "独立创业者的问责 + 社群 + 增长互助平台。"
+            "别再一个人扛了 \u2014\u2014 加入一群互相督促、分享增长策略、一起庆祝里程碑的创业者。"
+        )
+        features = [
+            {"title": "问责搭档", "desc": "匹配同阶段的创业者，每周 check-in，互相推着往前走。"},
+            {"title": "增长手册", "desc": "来自真实创业者的获客策略，不讲理论，只讲实操。"},
+            {"title": "公开构建", "desc": "分享进度、获取反馈、从社群里吸引你的第一批用户。"},
+            {"title": "营收里程碑", "desc": "一起追踪 MRR 目标，$1K、$10K、$100K \u2014\u2014 和你的同伴一起庆祝。"},
+            {"title": "AI 副驾驶", "desc": "基于同类产品的成功经验，AI 为你量身推荐下一步行动。"},
+            {"title": "创始人匹配", "desc": "找合伙人、顾问或内测用户。按阶段、领域、时区精准匹配。"},
+        ]
     else:
-        features = default_features
+        value_prop = (
+            "The accountability + community + growth platform for indie founders. "
+            "Stop building alone \u2014 join a tribe that holds you accountable, "
+            "shares growth tactics, and celebrates your wins."
+        )
+        features = [
+            {"title": "Accountability Partners", "desc": "Get matched with a founder at your stage. Weekly check-ins keep you on track."},
+            {"title": "Growth Playbooks", "desc": "Crowdsourced tactics from founders who've done it. No theory, just what works."},
+            {"title": "Build in Public", "desc": "Share progress, get feedback, attract your first users from the community."},
+            {"title": "Revenue Milestones", "desc": "Track MRR goals together. Celebrate $1K, $10K, $100K with your cohort."},
+            {"title": "AI Co-pilot", "desc": "AI-powered suggestions based on what worked for similar products in your niche."},
+            {"title": "Founder Matching", "desc": "Find co-founders, advisors, or beta testers. Filtered by stage, niche, and timezone."},
+        ]
 
     result = generate_and_deploy(name, value_prop, features,
-                                  deploy=bool(VERCEL_TOKEN))
+                                  project_name="v7-solopreneur-os",
+                                  deploy=bool(VERCEL_TOKEN), lang=lang)
     print(json.dumps(result, indent=2))
