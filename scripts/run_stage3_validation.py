@@ -93,7 +93,17 @@ def step_tam(cycle_id: int, direction_name: str) -> dict:
 
     try:
         result = calculate_tam(cycle_id, DIRECTION_ID, direction_name)
-        tam_val = result.get("tam", {}).get("value", 0)
+        tam_raw = result.get("tam", {}).get("value", 0)
+        # Handle string values like "$15B" or "15000000000"
+        if isinstance(tam_raw, str):
+            tam_raw = tam_raw.replace(",", "").replace("$", "")
+            multipliers = {"B": 1e9, "b": 1e9, "M": 1e6, "m": 1e6, "K": 1e3, "k": 1e3}
+            for suffix, mult in multipliers.items():
+                if tam_raw.endswith(suffix):
+                    tam_raw = float(tam_raw[:-1]) * mult
+                    break
+            tam_raw = float(tam_raw) if tam_raw else 0
+        tam_val = float(tam_raw or 0)
         trend = result.get("trend", "unknown")
         print(f"  TAM: ${tam_val:,.0f} | Trend: {trend}")
         update_pipeline_status(sb, cycle_id, "stage3_tam", "completed",
@@ -101,6 +111,7 @@ def step_tam(cycle_id: int, direction_name: str) -> dict:
         return {"success": True, "data": result}
     except Exception as e:
         print(f"  ERROR: {e}", file=sys.stderr)
+        traceback.print_exc()
         update_pipeline_status(sb, cycle_id, "stage3_tam", "failed", str(e))
         return {"success": False, "error": str(e)}
 
@@ -222,7 +233,14 @@ def step_gate_check(tam_result: dict, capital_result: dict,
     # Gate 1: TAM >= $1B
     tam_val = tam_result.get("data", {}).get("tam", {}).get("value", 0)
     if isinstance(tam_val, str):
-        tam_val = float(tam_val.replace(",", "").replace("$", ""))
+        cleaned = tam_val.replace(",", "").replace("$", "").strip()
+        multipliers = {"B": 1e9, "b": 1e9, "M": 1e6, "m": 1e6, "K": 1e3, "k": 1e3}
+        for suffix, mult in multipliers.items():
+            if cleaned.endswith(suffix):
+                cleaned = str(float(cleaned[:-1]) * mult)
+                break
+        tam_val = float(cleaned) if cleaned else 0
+    tam_val = float(tam_val or 0)
     gates["tam"] = {
         "threshold": "$1B",
         "actual": f"${tam_val:,.0f}" if tam_val else "N/A",
@@ -318,14 +336,28 @@ def step_generate_report(cycle_id: int, direction_name: str,
     comp_lines = []
     for name, data in comp_result.get("data", {}).items():
         thiel_c = data.get("thiel_comparison", {})
-        comp_lines.append(f"""### {name}
-- **Strengths**: {', '.join(data.get('strengths', [])[:3])}
-- **Weaknesses**: {', '.join(data.get('weaknesses', [])[:3])}
-- **Adoption Stage**: {data.get('adoption_stage', 'N/A')}
-- **Total Funding**: ${data.get('total_funding', 0):,.0f}
-- **Thiel**: Tech={'Y' if thiel_c.get('proprietary_tech', {}).get('has') else 'N'} | Network={'Y' if thiel_c.get('network_effects', {}).get('has') else 'N'} | Scale={'Y' if thiel_c.get('economies_of_scale', {}).get('has') else 'N'} | Brand={'Y' if thiel_c.get('brand', {}).get('has') else 'N'}
-- **Differentiation**: {data.get('differentiation_angle', 'N/A')}
-""")
+        if isinstance(thiel_c, str):
+            thiel_c = json.loads(thiel_c) if thiel_c else {}
+        funding = float(data.get("total_funding") or 0)
+        strengths = data.get("strengths", []) or []
+        weaknesses = data.get("weaknesses", []) or []
+        if isinstance(strengths, str):
+            strengths = json.loads(strengths) if strengths else []
+        if isinstance(weaknesses, str):
+            weaknesses = json.loads(weaknesses) if weaknesses else []
+        tech_y = "Y" if thiel_c.get("proprietary_tech", {}).get("has") else "N"
+        net_y = "Y" if thiel_c.get("network_effects", {}).get("has") else "N"
+        scale_y = "Y" if thiel_c.get("economies_of_scale", {}).get("has") else "N"
+        brand_y = "Y" if thiel_c.get("brand", {}).get("has") else "N"
+        comp_lines.append(
+            f"### {name}\n"
+            f"- **Strengths**: {', '.join(strengths[:3])}\n"
+            f"- **Weaknesses**: {', '.join(weaknesses[:3])}\n"
+            f"- **Adoption Stage**: {data.get('adoption_stage', 'N/A')}\n"
+            f"- **Total Funding**: ${funding:,.0f}\n"
+            f"- **Thiel**: Tech={tech_y} | Network={net_y} | Scale={scale_y} | Brand={brand_y}\n"
+            f"- **Differentiation**: {data.get('differentiation_angle', 'N/A')}\n"
+        )
 
     # Gate summary
     gate_lines = []
