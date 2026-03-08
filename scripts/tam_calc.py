@@ -67,8 +67,8 @@ Respond in JSON:
     end = text.rfind("}") + 1
     result = json.loads(text[start:end])
 
-    # Write to Supabase
-    sb.table("market_validations").upsert({
+    # Write to Supabase (check if row exists first)
+    row_data = {
         "cycle_id": cycle_id,
         "direction_id": direction_id,
         "direction_name": direction_name,
@@ -82,7 +82,18 @@ Respond in JSON:
         "som_reasoning": result["som"]["reasoning"],
         "trend": result["trend"],
         "trend_data": json.dumps(result.get("trend_data", {})),
-    }, on_conflict="cycle_id,direction_id").execute()
+    }
+
+    existing = sb.table("market_validations").select("id").eq(
+        "cycle_id", cycle_id
+    ).eq("direction_id", direction_id).limit(1).execute()
+
+    if existing.data:
+        sb.table("market_validations").update(row_data).eq(
+            "id", existing.data[0]["id"]
+        ).execute()
+    else:
+        sb.table("market_validations").insert(row_data).execute()
 
     return result
 
