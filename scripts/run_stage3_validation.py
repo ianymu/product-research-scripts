@@ -28,7 +28,7 @@ from supabase import create_client
 # — Environment —
 SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"].strip()
-TG_BOT_TOKEN = os.environ.get("TG_MARKET_BOT_TOKEN", "").strip()
+TG_BOT_TOKEN = os.environ.get("TG_TOKEN_MARKET", "").strip()
 TG_CHAT_ID = os.environ.get("TG_GROUP_CHAT_ID", "").strip()
 
 DIRECTION_ID = "solopreneur-community"
