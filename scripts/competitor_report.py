@@ -9,10 +9,10 @@ import requests
 import anthropic
 from supabase import create_client
 
-PERPLEXITY_API_KEY = os.environ["PERPLEXITY_API_KEY"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+PERPLEXITY_API_KEY = os.environ["PERPLEXITY_API_KEY"].strip()
+ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"].strip()
+SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
+SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"].strip()
 
 
 def analyze_competitor(cycle_id: int, direction_id: str, competitor_name: str) -> dict:
