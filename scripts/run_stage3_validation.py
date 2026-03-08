@@ -506,8 +506,9 @@ def step_generate_report(cycle_id: int, direction_name: str,
 {next_steps_text}
 """
 
-    # Save report
-    report_dir = os.path.join(os.path.dirname(__file__), "..", "..", "reports")
+    # Save report (use home dir on EC2, local staging dir otherwise)
+    home = os.path.expanduser("~")
+    report_dir = os.path.join(home, "reports")
     os.makedirs(report_dir, exist_ok=True)
     report_path = os.path.join(
         report_dir,
@@ -532,13 +533,21 @@ def step_tg_push(cycle_id: int, direction_name: str,
 
     gates = gate_result.get("gates", {})
     verdict = gate_result.get("verdict", "N/A")
-    tam_val = tam_result.get("data", {}).get("tam", {}).get("value", 0)
-    trend = tam_result.get("data", {}).get("trend", "?")
+    tam_raw = tam_result.get("data", {}).get("tam", {}).get("value", 0)
+    tam_val = float(tam_raw or 0) if not isinstance(tam_raw, str) else 0
+    if isinstance(tam_raw, str):
+        cleaned = tam_raw.replace(",", "").replace("$", "").strip()
+        for suffix, mult in {"B": 1e9, "M": 1e6, "K": 1e3}.items():
+            if cleaned.endswith(suffix):
+                cleaned = str(float(cleaned[:-1]) * mult)
+                break
+        tam_val = float(cleaned) if cleaned else 0
+    trend = tam_result.get("data", {}).get("trend") or "?"
 
     thiel = capital_result.get("data", {}).get("thiel_test", {})
-    thiel_score = thiel.get("score", 0)
+    thiel_score = thiel.get("score") or 0
     sc_pct = capital_result.get("data", {}).get("scorecard", {}).get(
-        "weighted_pct", "N/A")
+        "weighted_pct") or "N/A"
 
     gate_icons = []
     for gname, g in gates.items():

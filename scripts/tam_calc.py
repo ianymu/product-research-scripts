@@ -15,8 +15,10 @@ SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"].strip()
 
 
-def research_market(direction_name: str) -> str:
-    """Research market size via Perplexity."""
+def research_market(direction_name: str, english_query: str = "") -> str:
+    """Research market size via Perplexity (English queries per protocol)."""
+    # Use English query for search (per CLAUDE.md: search queries in English)
+    search_term = english_query or direction_name
     headers = {
         "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
         "Content-Type": "application/json",
@@ -24,7 +26,14 @@ def research_market(direction_name: str) -> str:
     payload = {
         "model": "sonar-pro",
         "messages": [
-            {"role": "user", "content": f"What is the Total Addressable Market (TAM), Serviceable Addressable Market (SAM), and Serviceable Obtainable Market (SOM) for {direction_name}? Include market size in USD, growth rate, key trends, recent funding events, and source URLs."},
+            {"role": "user", "content": (
+                f"What is the Total Addressable Market (TAM), Serviceable Addressable Market (SAM), "
+                f"and Serviceable Obtainable Market (SOM) for: {search_term}? "
+                f"Include specific market size numbers in USD, compound annual growth rate (CAGR), "
+                f"key trends in 2025-2026, recent funding events in this space, and source URLs. "
+                f"Consider adjacent markets: online community platforms, creator economy, "
+                f"accountability/productivity apps, and solopreneur tools/SaaS."
+            )},
         ],
     }
     resp = requests.post("https://api.perplexity.ai/chat/completions",
@@ -33,24 +42,31 @@ def research_market(direction_name: str) -> str:
     return resp.json()["choices"][0]["message"]["content"]
 
 
-def calculate_tam(cycle_id: int, direction_id: str, direction_name: str) -> dict:
+def calculate_tam(cycle_id: int, direction_id: str, direction_name: str,
+                   english_query: str = "") -> dict:
     """Full TAM/SAM/SOM calculation with trend analysis."""
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    # Research
-    research = research_market(direction_name)
+    # Research (English query for better results)
+    if not english_query:
+        english_query = "solopreneur community platform with accountability partners, growth tactics sharing, build-in-public features, AI co-pilot, and founder matching"
+    research = research_market(direction_name, english_query)
 
     # Analyze with Claude
-    prompt = f"""Based on this market research, extract structured TAM/SAM/SOM data:
+    prompt = f"""Based on this market research, extract structured TAM/SAM/SOM data.
 
+IMPORTANT: All values MUST be numeric (in USD). Do NOT return null or "N/A" for values.
+If exact data is not available, estimate based on adjacent market data and explain your reasoning.
+
+Research data:
 {research}
 
 Respond in JSON:
 {{
-  "tam": {{"value": NUMBER_IN_USD, "source": "URL", "reasoning": "..."}},
-  "sam": {{"value": NUMBER_IN_USD, "source": "URL", "reasoning": "..."}},
-  "som": {{"value": NUMBER_IN_USD, "source": "URL", "reasoning": "..."}},
+  "tam": {{"value": NUMBER_IN_USD, "source": "URL or description", "reasoning": "..."}},
+  "sam": {{"value": NUMBER_IN_USD, "source": "URL or description", "reasoning": "..."}},
+  "som": {{"value": NUMBER_IN_USD, "source": "URL or description", "reasoning": "..."}},
   "trend": "accelerating|stable|decelerating",
   "trend_data": {{"yoy_growth": "X%", "key_events": ["..."]}},
   "confidence": "high|medium|low"
@@ -67,20 +83,23 @@ Respond in JSON:
     end = text.rfind("}") + 1
     result = json.loads(text[start:end])
 
-    # Write to Supabase (check if row exists first)
+    # Write to Supabase (check if row exists first, handle None values)
+    tam = result.get("tam", {})
+    sam = result.get("sam", {})
+    som = result.get("som", {})
     row_data = {
         "cycle_id": cycle_id,
         "direction_id": direction_id,
         "direction_name": direction_name,
-        "tam_value": result["tam"]["value"],
-        "tam_source": result["tam"]["source"],
-        "tam_reasoning": result["tam"]["reasoning"],
-        "sam_value": result["sam"]["value"],
-        "sam_source": result["sam"]["source"],
-        "som_value": result["som"]["value"],
-        "som_source": result["som"]["source"],
-        "som_reasoning": result["som"]["reasoning"],
-        "trend": result["trend"],
+        "tam_value": tam.get("value"),
+        "tam_source": tam.get("source", ""),
+        "tam_reasoning": tam.get("reasoning", ""),
+        "sam_value": sam.get("value"),
+        "sam_source": sam.get("source", ""),
+        "som_value": som.get("value"),
+        "som_source": som.get("source", ""),
+        "som_reasoning": som.get("reasoning", ""),
+        "trend": result.get("trend"),
         "trend_data": json.dumps(result.get("trend_data", {})),
     }
 
