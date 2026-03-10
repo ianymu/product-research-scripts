@@ -12,7 +12,12 @@ import sys
 import argparse
 import requests
 from datetime import datetime, timezone
-from supabase import create_client
+try:
+    from supabase import create_client
+    USE_LITE = False
+except ImportError:
+    from supabase_lite import SupabaseLite, DuplicateError
+    USE_LITE = True
 
 SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"].strip()
@@ -51,7 +56,7 @@ else:
 
 def collect_ih(cycle_id: int) -> dict:
     """Collect IndieHackers discussions via Algolia search API."""
-    sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+    sb = SupabaseLite(SUPABASE_URL, SUPABASE_KEY) if USE_LITE else create_client(SUPABASE_URL, SUPABASE_KEY)
     headers = {
         "X-Algolia-Application-Id": ALGOLIA_APP_ID,
         "X-Algolia-API-Key": ALGOLIA_API_KEY,
@@ -95,10 +100,13 @@ def collect_ih(cycle_id: int) -> dict:
                 }
 
                 try:
-                    sb.table("pain_points").insert(record).execute()
+                    if USE_LITE:
+                        sb.insert("pain_points", record)
+                    else:
+                        sb.table("pain_points").insert(record).execute()
                     results["written"] += 1
                 except Exception as e:
-                    if "23505" in str(e) or "duplicate" in str(e).lower():
+                    if "23505" in str(e) or "duplicate" in str(e).lower() or "DuplicateError" in type(e).__name__:
                         results["duplicates"] += 1
                     else:
                         results["errors"] += 1
