@@ -69,10 +69,36 @@ def run_assessment(cycle_id: int, direction_id: str,
             f"Thiel: {json.dumps(thiel)}\n"
         )
 
-    prompt = f"""You are a venture capital analyst. Evaluate this product direction for investment potential.
+    # Load Stage 2 pain_points summary for this direction
+    pain_summary = ""
+    try:
+        pain_resp = sb.table("pain_points").select(
+            "cluster_label,total_score,category"
+        ).eq("cycle_id", cycle_id).not_.is_(
+            "total_score", "null"
+        ).order("total_score", desc=True).limit(50).execute()
+        if pain_resp.data:
+            seen_clusters = {}
+            for p in pain_resp.data:
+                label = p.get("cluster_label", "unknown")
+                if label not in seen_clusters:
+                    seen_clusters[label] = p.get("total_score", 0)
+            pain_lines = [f"  - {label}: {score}/100" for label, score in seen_clusters.items()]
+            top_score = max(seen_clusters.values()) if seen_clusters else 0
+            pain_summary = (
+                f"Stage 2 clusters (top score {top_score}/100):\n"
+                + "\n".join(pain_lines[:10])
+            )
+    except Exception:
+        pass
+
+    prompt = f"""You are a venture capital analyst using the Bill Payne Scorecard Method.
 
 ## Product Direction
-"{direction_name}" — An integrated platform for solopreneur/indie founders combining accountability partners, community, growth tactics sharing, build-in-public features, AI co-pilot, and founder matching. Combined score from Stage 2: 83/100 (5-star GO).
+"{direction_name}" (direction_id: {direction_id}, cycle: {cycle_id})
+
+## Stage 2 Pain Analysis
+{pain_summary if pain_summary else "No Stage 2 data available."}
 
 ## Market Data
 {tam_summary if tam_summary else "No TAM data available yet."}
@@ -84,14 +110,23 @@ def run_assessment(cycle_id: int, direction_id: str,
 
 Produce a JSON assessment with these 3 components:
 
-### 1. Scorecard Method (weighted scoring)
-Rate each factor 1-5 and apply weights:
-- Team (30%): Solo founder with AI + automation stack. Rate execution ability.
-- Market (25%): Based on TAM data above.
-- Product (15%): Combined 83/100 from pain analysis, 7 clusters merged.
-- Competition (10%): Based on competitor data above.
-- Marketing (10%): Viral potential from build-in-public + community.
-- Fundraising/Other (10%): Bootstrappable? Revenue-first path?
+### 1. Bill Payne Scorecard Method
+This is the standard angel/seed-stage scorecard. Rate each factor as a PERCENTAGE where:
+- 100% = average startup at this stage (baseline)
+- >100% = above average (e.g., 120% = strong advantage)
+- <100% = below average (e.g., 70% = notable weakness)
+- Typical range: 60% to 140%
+
+Apply these weights:
+- Team (30%): Solo founder with AI/automation stack. Calibration: solo technical founders like Pieter Levels (NomadList, $2M+ ARR solo) score ~80%. Solo with proven distribution scores ~90%. Solo with no track record ~60-70%.
+- Market (25%): Based on TAM/SAM/SOM data. >$10B TAM with accelerating trend = 110-130%.
+- Product (15%): Based on Stage 2 pain score. >=65/100 = validated demand ~100-110%.
+- Competition (10%): Fragmented with no dominant player = 100-120%. Red ocean = 60-80%.
+- Marketing (10%): Strong organic/viral channels = 100-120%. Unproven = 70-90%.
+- Fundraising/Other (5%): Bootstrappable with revenue path = 80-100%.
+- Other/Timing (5%): Macro tailwinds (AI wave, remote work trend) = 100-130%.
+
+Calculate weighted_pct = sum of (factor_pct × weight). Example: Team 80% × 30% = 24%.
 
 ### 2. VC Valuation Method
 - Estimate Year 5 revenue (monthly × 12 × growth)
@@ -114,9 +149,9 @@ Output ONLY this JSON:
     "product": {{"score": N, "weight": 0.15, "reasoning": "..."}},
     "competition": {{"score": N, "weight": 0.10, "reasoning": "..."}},
     "marketing": {{"score": N, "weight": 0.10, "reasoning": "..."}},
-    "fundraising_other": {{"score": N, "weight": 0.10, "reasoning": "..."}},
-    "weighted_total": N,
-    "weighted_pct": "N%"
+    "fundraising_other": {{"score": N, "weight": 0.05, "reasoning": "..."}},
+    "other_timing": {{"score": N, "weight": 0.05, "reasoning": "..."}},
+    "weighted_pct": N
   }},
   "vc_valuation": {{
     "y5_revenue_estimate": N,
@@ -142,7 +177,9 @@ Output ONLY this JSON:
     "key_risk": "...",
     "key_strength": "..."
   }}
-}}"""
+}}
+
+IMPORTANT: "score" in scorecard factors is a PERCENTAGE (e.g., 80, 95, 120), NOT a 1-5 scale. weighted_pct is also a percentage (e.g., 95 means 95%)."""
 
     resp = client.messages.create(
         model="claude-opus-4-6",
@@ -160,15 +197,39 @@ Output ONLY this JSON:
     vc = result.get("vc_valuation", {})
     thiel = result.get("thiel_test", {})
 
+    # --- Gate logic: PASS / MAYBE / KILL ---
+    scorecard_pct = sc.get("weighted_pct", 0) or 0
+    thiel_score = thiel.get("score", 0) or 0
+
+    gate_scorecard_pass = scorecard_pct >= 100
+    gate_thiel_pass = thiel_score >= 3
+
+    # Determine gate verdict (three-way: PASS / MAYBE / KILL)
+    if gate_scorecard_pass and gate_thiel_pass:
+        gate_verdict = "PASS"
+    elif scorecard_pct >= 80 and not gate_thiel_pass:
+        # Close on scorecard but weak moat → MAYBE (human review)
+        gate_verdict = "MAYBE"
+    elif gate_thiel_pass and scorecard_pct >= 75:
+        # Strong moat but scorecard slightly below → MAYBE
+        gate_verdict = "MAYBE"
+    elif scorecard_pct >= 90:
+        # Very close to PASS on scorecard alone → MAYBE
+        gate_verdict = "MAYBE"
+    else:
+        gate_verdict = "KILL"
+
+    print(f"Gate: scorecard={scorecard_pct}%, thiel={thiel_score}/4 → {gate_verdict}")
+
     update_data = {
-        # Scorecard columns
+        # Scorecard columns (now percentages, e.g. 80 = 80%)
         "scorecard_team": sc.get("team", {}).get("score"),
         "scorecard_market": sc.get("market", {}).get("score"),
         "scorecard_product": sc.get("product", {}).get("score"),
         "scorecard_competition": sc.get("competition", {}).get("score"),
         "scorecard_marketing": sc.get("marketing", {}).get("score"),
         "scorecard_fundraising": sc.get("fundraising_other", {}).get("score"),
-        "scorecard_weighted": sc.get("weighted_total"),
+        "scorecard_weighted": scorecard_pct,
         # VC valuation columns
         "vc_year5_revenue": vc.get("y5_revenue_estimate"),
         "vc_ps_multiple": vc.get("ps_multiple"),
@@ -181,10 +242,11 @@ Output ONLY this JSON:
         "thiel_network_effects": thiel.get("network_effects", {}).get("has", False),
         "thiel_economies_of_scale": thiel.get("economies_of_scale", {}).get("has", False),
         "thiel_brand": thiel.get("brand", {}).get("has", False),
-        "thiel_score": thiel.get("score", 0),
-        # Gate verdict
-        "gate_scorecard_pass": (sc.get("weighted_total", 0) or 0) >= 5.0,
-        "gate_thiel_pass": (thiel.get("score", 0) or 0) >= 3,
+        "thiel_score": thiel_score,
+        # Gate verdict (PASS / MAYBE / KILL)
+        "gate_scorecard_pass": gate_scorecard_pass,
+        "gate_thiel_pass": gate_thiel_pass,
+        "gate_verdict": gate_verdict,
         # Full reports as text (for detailed reasoning)
         "report_c_capital": json.dumps(result, ensure_ascii=False),
         "report_f_recommendation": json.dumps(result.get("overall_verdict", {}), ensure_ascii=False),
@@ -219,24 +281,35 @@ def format_summary(result: dict) -> str:
                                    "economies_of_scale", "brand"]
                       if thiel.get(k, {}).get("has", False))
 
+    scorecard_pct = sc.get("weighted_pct", "N/A")
+    # Determine gate verdict from scores
+    sc_val = scorecard_pct if isinstance(scorecard_pct, (int, float)) else 0
+    if sc_val >= 100 and thiel_count >= 3:
+        gate = "PASS"
+    elif sc_val >= 80 or (thiel_count >= 3 and sc_val >= 75) or sc_val >= 90:
+        gate = "MAYBE"
+    else:
+        gate = "KILL"
+
     lines = [
         "=== Capital Assessment ===",
-        f"Scorecard: {sc.get('weighted_pct', 'N/A')}",
-        f"  Team({sc.get('team', {}).get('score', '?')}) "
-        f"Market({sc.get('market', {}).get('score', '?')}) "
-        f"Product({sc.get('product', {}).get('score', '?')}) "
-        f"Competition({sc.get('competition', {}).get('score', '?')}) "
-        f"Marketing({sc.get('marketing', {}).get('score', '?')}) "
-        f"Fund/Other({sc.get('fundraising_other', {}).get('score', '?')})",
+        f"Scorecard: {scorecard_pct}% (gate: >= 100%)",
+        f"  Team({sc.get('team', {}).get('score', '?')}%) "
+        f"Market({sc.get('market', {}).get('score', '?')}%) "
+        f"Product({sc.get('product', {}).get('score', '?')}%) "
+        f"Competition({sc.get('competition', {}).get('score', '?')}%) "
+        f"Marketing({sc.get('marketing', {}).get('score', '?')}%) "
+        f"Fund({sc.get('fundraising_other', {}).get('score', '?')}%) "
+        f"Other({sc.get('other_timing', {}).get('score', '?')}%)",
         f"VC Valuation: Pre-Money ${vc.get('pre_money_valuation', 'N/A')}",
         f"  Y5 Rev: ${vc.get('y5_revenue_estimate', 'N/A')} × {vc.get('ps_multiple', 'N/A')}x PS",
         f"  Comparable: {vc.get('comparable_exit', 'N/A')}",
-        f"Thiel Test: {thiel_count}/4",
+        f"Thiel Test: {thiel_count}/4 (gate: >= 3/4)",
         f"  Tech: {'Y' if thiel.get('proprietary_tech', {}).get('has') else 'N'} | "
         f"Network: {'Y' if thiel.get('network_effects', {}).get('has') else 'N'} | "
         f"Scale: {'Y' if thiel.get('economies_of_scale', {}).get('has') else 'N'} | "
         f"Brand: {'Y' if thiel.get('brand', {}).get('has') else 'N'}",
-        f"Verdict: {'INVESTABLE' if verdict.get('investable') else 'NOT INVESTABLE'}",
+        f"Gate Verdict: {gate}",
         f"  {verdict.get('summary', '')}",
         f"  Risk: {verdict.get('key_risk', '')}",
         f"  Strength: {verdict.get('key_strength', '')}",
