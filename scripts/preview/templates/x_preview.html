@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>X Thread Preview</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, 'Segoe UI', sans-serif; background: #000; color: #e7e9ea; }
+.phone-frame { max-width: 375px; margin: 0 auto; min-height: 100vh; }
+.x-header { padding: 12px 16px; border-bottom: 1px solid #2f3336; display: flex; align-items: center; gap: 12px; }
+.x-header .logo { font-size: 20px; font-weight: bold; }
+.thread { padding: 0 16px; }
+.tweet { padding: 16px 0; border-bottom: 1px solid #2f3336; }
+.tweet-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.avatar { width: 40px; height: 40px; border-radius: 50%; background: #1d9bf0; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 16px; }
+.tweet-name { font-weight: bold; font-size: 14px; }
+.tweet-handle { color: #71767b; font-size: 14px; }
+.tweet-text { font-size: 15px; line-height: 1.5; margin-bottom: 12px; white-space: pre-wrap; }
+.tweet-actions { display: flex; justify-content: space-between; max-width: 300px; }
+.tweet-action { color: #71767b; font-size: 13px; cursor: pointer; }
+.tweet-action:hover { color: #1d9bf0; }
+.thread-line { width: 2px; background: #2f3336; margin-left: 19px; height: 16px; }
+.copy-btn { position: fixed; bottom: 20px; right: 20px; background: #1d9bf0; color: white; border: none; padding: 12px 24px; border-radius: 24px; font-size: 14px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.3); z-index: 100; }
+</style>
+</head>
+<body>
+<div class="phone-frame">
+  <div class="x-header">
+    <span class="logo">𝕏</span>
+    <span style="color:#71767b;">Thread Preview</span>
+  </div>
+  <div class="thread" id="thread">加载中...</div>
+</div>
+<button class="copy-btn" onclick="copyThread()">Copy Thread</button>
+<script>
+const draftId = window.location.pathname.split('/').pop();
+fetch(`/api/draft/${draftId}`).then(r => r.json()).then(data => {
+  const d = data.draft;
+  if (!d) { document.getElementById('thread').textContent = 'Draft not found'; return; }
+  const tweets = (d.content || '').split('---').map(t => t.trim()).filter(Boolean);
+  document.getElementById('thread').innerHTML = tweets.map((text, i) => `
+    ${i > 0 ? '<div class="thread-line"></div>' : ''}
+    <div class="tweet">
+      <div class="tweet-header">
+        <div class="avatar">I</div>
+        <div><div class="tweet-name">Ian's OPC</div><div class="tweet-handle">@ianymu · ${i === 0 ? 'now' : i + 'm'}</div></div>
+      </div>
+      <div class="tweet-text">${text.replace(/</g, '&lt;')}</div>
+      <div class="tweet-actions">
+        <span class="tweet-action">💬 0</span>
+        <span class="tweet-action">🔄 0</span>
+        <span class="tweet-action">❤️ 0</span>
+        <span class="tweet-action">📊 0</span>
+      </div>
+    </div>
+  `).join('');
+}).catch(e => { document.getElementById('thread').textContent = 'Error: ' + e; });
+
+function copyThread() {
+  const tweets = document.querySelectorAll('.tweet-text');
+  const text = Array.from(tweets).map(t => t.textContent).join('\n\n---\n\n');
+  navigator.clipboard.writeText(text).then(() => alert('Copied!')).catch(() => alert('Copy failed'));
+}
+</script>
+</body>
+</html>
