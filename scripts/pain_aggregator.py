@@ -162,13 +162,20 @@ Output a JSON array of direction objects:
   "name": "product concept name",
   "one_liner": "one-sentence product pitch",
   "target_user": "specific user segment",
+  "problem_statement": "what specific problem does this solve? (2-3 sentences, concrete)",
+  "value_proposition": "why would users pay for this? what's the unique value?",
+  "competitors": [
+    {{"name": "competitor name", "weakness": "what they do poorly that we can exploit"}}
+  ],
+  "tam_estimate": "Total Addressable Market estimate with reasoning (e.g. '$2.1B — 15M indie devs × $140/yr avg tool spend')",
+  "go_or_kill_recommendation": "GO / MAYBE / KILL with 1-sentence justification",
   "cluster_indices": [1, 3, 7],
   "weighted_score": 87.5,
   "avg_score": 72.3,
   "max_score": 85,
   "synergy_types": ["JTBD Alignment", "Hook Multiplication"],
   "combined_d_scores": {{"d1": 7, "d2": 6, "d3": 8, "d4": 5, "d5": 7, "d6": 6, "d7": 7, "d8": 6}},
-  "mvp_scope": "what the 72h MVP would include",
+  "mvp_scope": "what the 72h MVP would include (3-5 bullet points)",
   "reasoning": "why these clusters synergize into one product"
 }}]
 
@@ -259,19 +266,28 @@ def push_directions_to_tg(directions: list[dict]) -> None:
     for i, d in enumerate(directions):
         d_scores = d.get("combined_d_scores", {})
         d_str = " ".join(f"D{k[-1]}:{v}" for k, v in sorted(d_scores.items()))
+        rec = d.get("go_or_kill_recommendation", "")
+
+        # Competitors summary
+        comps = d.get("competitors", [])
+        comp_str = " / ".join(f"{c.get('name','?')}({c.get('weakness','')[:20]})" for c in comps[:3]) if comps else "暂无"
 
         block = (
-            f"*{i+1}. {d['name']}* (⚡ {d.get('weighted_score', 0):.0f}分)\n"
+            f"*{i+1}. {d['name']}* (⚡ {d.get('weighted_score', 0):.0f}分) {'🟢' if 'GO' in rec.upper() else '🟡' if 'MAYBE' in rec.upper() else '🔴'}\n"
             f"📌 {d.get('one_liner', '')}\n"
-            f"👤 {d.get('target_user', '')}\n"
-            f"📊 均分:{d.get('avg_score', 0):.0f} | 最高:{d.get('max_score', 0)} | 聚合:{d.get('cluster_count', 0)}个痛点\n"
+            f"👤 目标用户: {d.get('target_user', '')}\n"
+            f"❓ 解决什么: {d.get('problem_statement', '')[:120]}\n"
+            f"💎 价值: {d.get('value_proposition', '')[:120]}\n"
+            f"🏟 市场: {d.get('tam_estimate', '未评估')[:80]}\n"
+            f"⚔️ 竞对: {comp_str}\n"
+            f"📊 分数: 均{d.get('avg_score', 0):.0f}/最高{d.get('max_score', 0)}/聚合{d.get('cluster_count', 0)}痛点\n"
             f"🧬 {d_str}\n"
-            f"🚀 MVP: {d.get('mvp_scope', '')}\n"
-            f"💡 {d.get('reasoning', '')}\n\n"
+            f"🚀 MVP: {d.get('mvp_scope', '')[:150]}\n"
+            f"📋 建议: {rec}\n\n"
         )
         header += block
 
-    header += "回复 `GO 1,2` 确认方向 | `KILL 3` 放弃 | `DETAIL 1` 看详情"
+    header += "回复 `GO 1,2` 确认 → 自动生成Demo\n`KILL 3` 放弃 | `DETAIL 1` 看详情"
 
     # TG has 4096 char limit, split if needed
     if len(header) <= 4096:
