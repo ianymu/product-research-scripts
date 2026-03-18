@@ -132,9 +132,9 @@ def aggregate_to_directions(clusters: list[dict]) -> list[dict]:
 
     summaries = [f"{i+1}. {_cluster_summary(c)}" for i, c in enumerate(clusters)]
 
-    # Process in chunks of 80 to stay within context limits
+    # Process in chunks of 25 to avoid output truncation
     all_directions: list[dict] = []
-    chunk_size = 80
+    chunk_size = 25
 
     for chunk_start in range(0, len(summaries), chunk_size):
         chunk = summaries[chunk_start:chunk_start + chunk_size]
@@ -183,7 +183,7 @@ Only output valid JSON. No markdown wrapping."""
 
         resp = claude.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=8000,
+            max_tokens=16000,
             messages=[{"role": "user", "content": prompt}],
         )
         text = resp.content[0].text.strip()
@@ -193,7 +193,24 @@ Only output valid JSON. No markdown wrapping."""
                 text = text.split("```")[1].strip()
                 if text.startswith("json"):
                     text = text[4:].strip()
-            directions = json.loads(text)
+            # Try to fix truncated JSON: find last complete object
+            try:
+                directions = json.loads(text)
+            except json.JSONDecodeError:
+                # Attempt to fix by finding last complete '}]' or '}\n]'
+                last_bracket = text.rfind("}]")
+                if last_bracket > 0:
+                    text = text[:last_bracket + 2]
+                    directions = json.loads(text)
+                else:
+                    # Try wrapping with ']'
+                    last_brace = text.rfind("}")
+                    if last_brace > 0:
+                        text = text[:last_brace + 1] + "]"
+                        directions = json.loads(text)
+                    else:
+                        raise
+
             if isinstance(directions, list):
                 # Resolve cluster indices to actual data
                 for d in directions:
@@ -205,8 +222,9 @@ Only output valid JSON. No markdown wrapping."""
                     d["clusters"] = resolved
                     d["cluster_count"] = len(resolved)
                 all_directions.extend(directions)
+                log.info("  Chunk %d: parsed %d directions", chunk_start, len(directions))
         except (json.JSONDecodeError, IndexError) as e:
-            log.warning("  Chunk %d parse error: %s", chunk_start, e)
+            log.warning("  Chunk %d parse error: %s (text len=%d)", chunk_start, e, len(text))
 
         if chunk_start + chunk_size < len(summaries):
             time.sleep(1)
