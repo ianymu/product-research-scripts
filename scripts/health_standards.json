@@ -1,0 +1,124 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "last_updated": "2026-03-18",
+    "sources": [
+      "NIH NHLBI — How Much Sleep Is Enough",
+      "AASM Consensus Statement (PMC4434546)",
+      "CDC — About Sleep",
+      "Mayo Clinic — Resting Heart Rate / Bradycardia / Tachycardia",
+      "AHA — Target Heart Rates",
+      "PMC7734556 — Lifelines Cohort HRV Reference",
+      "PMC6959968 — Burnout and HRV",
+      "PMC12844513 — Biobehavioral Burnout Measures",
+      "Sleep Foundation — Sleep Latency / Stages / Efficiency",
+      "WHOOP — Normal HRV Range by Age & Gender"
+    ]
+  },
+  "sleep": {
+    "recommended_duration_hours": {
+      "adults_18_64": {"min": 7, "max": 9, "not_recommended_below": 6, "not_recommended_above": 10},
+      "older_adults_65_plus": {"min": 7, "max": 8, "not_recommended_below": 5, "not_recommended_above": 9}
+    },
+    "architecture_pct": {
+      "N1_light": {"normal_min": 5, "normal_max": 10, "concerning_above": 15},
+      "N2_core": {"normal_min": 45, "normal_max": 55},
+      "N3_deep": {"normal_min": 10, "normal_max": 20, "concerning_below": 10},
+      "REM": {"normal_min": 20, "normal_max": 25, "concerning_below": 15}
+    },
+    "latency_minutes": {
+      "optimal_min": 10,
+      "optimal_max": 20,
+      "borderline_max": 30,
+      "insomnia_threshold": 30,
+      "deprivation_fast_below": 5
+    },
+    "efficiency_pct": {
+      "excellent": 90,
+      "good": 85,
+      "normal_clinical_avg": 80,
+      "borderline": 75,
+      "poor_below": 50
+    },
+    "nocturnal_awakenings": {
+      "normal_max": 1,
+      "concerning_above": 3
+    },
+    "waso_minutes": {
+      "normal_max": 30,
+      "concerning_above": 30
+    }
+  },
+  "heart_rate": {
+    "resting_bpm": {
+      "bradycardia_below": 60,
+      "normal_min": 60,
+      "normal_max": 100,
+      "tachycardia_above": 100,
+      "athlete_min": 40,
+      "athlete_max": 60,
+      "severe_tachycardia": 150
+    },
+    "fitness_classification_bpm": {
+      "athlete": {"min": 40, "max": 50},
+      "excellent": {"min": 50, "max": 60},
+      "good": {"min": 60, "max": 70},
+      "average": {"min": 70, "max": 75},
+      "below_average": {"min": 75, "max": 85},
+      "poor": {"min": 85, "max": 100}
+    },
+    "zones_pct_hrmax": {
+      "zone1_recovery": {"min": 50, "max": 60},
+      "zone2_aerobic": {"min": 60, "max": 70},
+      "zone3_cardio": {"min": 70, "max": 80},
+      "zone4_threshold": {"min": 80, "max": 90},
+      "zone5_max": {"min": 90, "max": 100}
+    },
+    "max_hr_formula": "208 - (0.7 * age)",
+    "sleep_bradycardia_normal_min": 40
+  },
+  "hrv": {
+    "metric": "RMSSD",
+    "unit": "ms",
+    "by_age": {
+      "18_25": {"low_p25": 45, "avg_p50": 63, "good_p75": 80},
+      "26_35": {"low_p25": 40, "avg_p50": 60, "good_p75": 75},
+      "36_45": {"low_p25": 30, "avg_p50": 50, "good_p75": 65},
+      "46_55": {"low_p25": 25, "avg_p50": 40, "good_p75": 55},
+      "56_65": {"low_p25": 20, "avg_p50": 35, "good_p75": 50},
+      "65_plus": {"low_p25": 15, "avg_p50": 25, "good_p75": 40}
+    },
+    "alerts": {
+      "acute_drop_warning_pct": 20,
+      "chronic_low_consecutive_days": 7,
+      "critically_low_absolute_ms": 15
+    }
+  },
+  "burnout_composite": {
+    "description": "Multi-signal burnout detection — triggers when 3+ signals simultaneously active",
+    "alert_threshold_signals": 3,
+    "signals": {
+      "resting_hr_elevated_above_baseline_bpm": 5,
+      "hrv_drop_below_7day_baseline_pct": 20,
+      "sleep_efficiency_below_pct": 80,
+      "sleep_duration_below_hours": 6.5,
+      "deep_sleep_below_pct": 10,
+      "sleep_latency_above_min": 30,
+      "nocturnal_awakenings_above": 3
+    },
+    "severity": {
+      "monitor": {"signals_min": 1, "signals_max": 2, "color": "yellow", "action": "观察"},
+      "warning": {"signals_min": 3, "signals_max": 4, "color": "orange", "action": "减负+优先恢复"},
+      "critical": {"signals_min": 5, "signals_max": 7, "color": "red", "action": "必须休息+考虑就医"}
+    }
+  },
+  "reminder_messages": {
+    "sleep_poor": "你最近的睡眠质量不太好（效率 {efficiency}%），建议今晚早点休息。",
+    "sleep_short": "你昨晚只睡了 {hours} 小时，低于建议的 7 小时。试试今晚提前 {deficit} 小时上床？",
+    "deep_sleep_low": "深度睡眠占比只有 {pct}%（建议 ≥10%），可以试试睡前避免屏幕、保持凉爽环境。",
+    "hr_elevated": "今天静息心率 {bpm} bpm，比你 7 天均值高了 {delta} bpm。可能是压力或缺觉，注意休息。",
+    "hrv_drop": "HRV 下降了 {drop_pct}%，身体恢复状态不太好。建议减少高强度工作，多做深呼吸。",
+    "burnout_warning": "⚠️ 检测到 {count} 个倦怠信号同时亮起。你的身体在说「慢下来」。建议今天减量 30%。",
+    "burnout_critical": "🚨 倦怠风险很高（{count}/7 信号）。强烈建议今天停下来休息。你先休息，工作的事交给我。"
+  }
+}
