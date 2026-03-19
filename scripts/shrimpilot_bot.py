@@ -44,6 +44,7 @@ CHAT_ID = os.environ.get("TG_SHRIMPILOT_CHAT_ID", "").strip()
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 MEMORY_DIR = Path.home() / ".shrimpilot" / "memory"
 MEMORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -187,36 +188,32 @@ def get_weather(city: str = "Beijing") -> dict:
 
 
 # === LLM Helper ===
-def call_claude(prompt: str, system: str = "", max_tokens: int = 2000) -> str:
-    """Call Claude API for content generation."""
-    if not ANTHROPIC_KEY:
-        return "[Error: ANTHROPIC_API_KEY not set]"
+def call_gemini(prompt: str, system: str = "", max_tokens: int = 2000) -> str:
+    """Call Gemini 2.5 Pro API for content generation."""
+    if not GEMINI_KEY:
+        return "[Error: GEMINI_API_KEY not set]"
 
     try:
-        with httpx.Client(timeout=60) as client:
-            messages = [{"role": "user", "content": prompt}]
+        with httpx.Client(timeout=120) as client:
             body = {
-                "model": "claude-sonnet-4-6-20250514",
-                "max_tokens": max_tokens,
-                "messages": messages,
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"maxOutputTokens": max_tokens},
             }
             if system:
-                body["system"] = system
+                body["systemInstruction"] = {"parts": [{"text": system}]}
 
             resp = client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key={GEMINI_KEY}",
+                headers={"content-type": "application/json"},
                 json=body,
             )
             data = resp.json()
-            if data.get("content"):
-                return data["content"][0]["text"]
+            candidates = data.get("candidates", [])
+            if candidates and candidates[0].get("content", {}).get("parts"):
+                return candidates[0]["content"]["parts"][0]["text"]
             else:
-                return f"[LLM Error: {data.get('error', {}).get('message', 'unknown')}]"
+                err = data.get("error", {}).get("message", str(data)[:200])
+                return f"[LLM Error: {err}]"
     except Exception as e:
         return f"[LLM Error: {e}]"
 
@@ -323,7 +320,7 @@ V7 产研高分痛点 (>= 65分):
 
 请基于以上真实数据推荐 3 个选题。"""
 
-    recommendations = call_claude(prompt, system=system, max_tokens=1500)
+    recommendations = call_gemini(prompt, system=system, max_tokens=1500)
 
     lines = [
         f"📊 *7 日热点监测 + 选题推荐*",
@@ -377,7 +374,7 @@ def ops_content_gen(topic: str) -> str:
 
 用中文写微信和小红书，英文写X/Twitter。"""
 
-    content = call_claude(
+    content = call_gemini(
         f"请为以下话题生成三个平台的内容:\n\n话题: {topic}",
         system=system,
         max_tokens=4000,
@@ -849,6 +846,164 @@ def care_water() -> str:
     return f"💧 今日饮水: {glasses}/{target} 杯（还差 {target - glasses} 杯）"
 
 
+# === Meal Photo Analysis ===
+MEAL_LOG_PATH = MEMORY_DIR / "meal_log.json"
+
+import base64
+
+
+def tg_download_photo(file_id: str):
+    """Download a photo from Telegram by file_id."""
+    try:
+        with httpx.Client(timeout=30) as client:
+            # Get file path
+            resp = client.get(f"{TG_API}/getFile", params={"file_id": file_id})
+            data = resp.json()
+            if not data.get("ok"):
+                log.error(f"TG getFile failed: {data}")
+                return None
+            file_path = data["result"]["file_path"]
+            # Download file
+            dl_url = f"https://api.telegram.org/file/bot{TG_TOKEN}/{file_path}"
+            resp = client.get(dl_url)
+            if resp.status_code == 200:
+                return resp.content
+            log.error(f"TG download failed: {resp.status_code}")
+            return None
+    except Exception as e:
+        log.error(f"TG download error: {e}")
+        return None
+
+
+def analyze_meal_photo(file_id: str, chat_id: str, caption: str = "") -> str:
+    """Download photo, analyze with Gemini Vision, log meal."""
+    if not GEMINI_KEY:
+        return "[Error: GEMINI_API_KEY not set]"
+
+    # Download photo
+    photo_bytes = tg_download_photo(file_id)
+    if not photo_bytes:
+        return "无法下载照片，请重试。"
+
+    img_b64 = base64.b64encode(photo_bytes).decode("utf-8")
+
+    # Call Claude Vision
+    system_prompt = (
+        "你是一个专业的中餐/西餐识别和营养分析助手。用户会发送一张食物照片。\n"
+        "请识别照片中的菜品，估算营养信息，并给出健康评分。\n"
+        "用 JSON 格式返回（不要 Markdown code block，直接返回 JSON）：\n"
+        '{"dishes": [{"name": "菜名", "cal_est": 300, "protein_g": 15, "note": "简短评价"}], '
+        '"total_cal": 800, "health_rating": 4, "summary": "一句话总评", '
+        '"improvement": "一个具体改善建议"}\n'
+        "health_rating: 1-5 分（1=不健康, 5=非常健康）\n"
+        "如果照片不是食物，返回 {\"error\": \"这不是食物照片\"}"
+    )
+
+    try:
+        with httpx.Client(timeout=120) as client:
+            # Gemini Vision request
+            gemini_parts = [
+                {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}},
+            ]
+            if caption:
+                gemini_parts.append({"text": f"补充说明: {caption}"})
+            else:
+                gemini_parts.append({"text": "请识别这张食物照片中的菜品并分析营养。"})
+
+            resp = client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key={GEMINI_KEY}",
+                headers={"content-type": "application/json"},
+                json={
+                    "contents": [{"parts": gemini_parts}],
+                    "systemInstruction": {"parts": [{"text": system_prompt}]},
+                    "generationConfig": {"maxOutputTokens": 1500},
+                },
+            )
+            data = resp.json()
+            candidates = data.get("candidates", [])
+            if candidates and candidates[0].get("content", {}).get("parts"):
+                raw_text = candidates[0]["content"]["parts"][0]["text"]
+            else:
+                err = data.get("error", {}).get("message", str(data)[:200])
+                return f"分析失败: {err}"
+    except Exception as e:
+        log.error(f"Gemini Vision error: {e}")
+        return f"分析失败: {e}"
+
+    # Parse JSON response
+    try:
+        # Strip possible markdown code block
+        cleaned = raw_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = "\n".join(cleaned.split("\n")[1:])
+        if cleaned.endswith("```"):
+            cleaned = cleaned[: cleaned.rfind("```")]
+        result = json.loads(cleaned.strip())
+    except json.JSONDecodeError:
+        log.warning(f"Could not parse JSON from Claude: {raw_text[:200]}")
+        return f"菜品分析:\n\n{raw_text}"
+
+    if result.get("error"):
+        return result["error"]
+
+    # Format TG response
+    now = datetime.now()
+    lines = ["*菜品识别结果*", ""]
+    for d in result.get("dishes", []):
+        lines.append(f"  {d['name']} — ~{d.get('cal_est', '?')}kcal, 蛋白质 {d.get('protein_g', '?')}g")
+        if d.get("note"):
+            lines.append(f"    _{d['note']}_")
+    lines.append("")
+    lines.append(f"总热量: ~{result.get('total_cal', '?')}kcal")
+    rating = result.get("health_rating", 3)
+    stars = "★" * rating + "☆" * (5 - rating)
+    lines.append(f"健康评分: {stars} ({rating}/5)")
+    lines.append(f"总评: {result.get('summary', '')}")
+    if result.get("improvement"):
+        lines.append(f"改善建议: {result['improvement']}")
+
+    # Log meal
+    meal_log = {"entries": [], "current_streak": 0}
+    if MEAL_LOG_PATH.exists():
+        try:
+            meal_log = json.loads(MEAL_LOG_PATH.read_text())
+        except Exception:
+            pass
+
+    entry = {
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M"),
+        "type": "lunch" if 10 <= now.hour < 15 else "dinner" if 15 <= now.hour < 21 else "other",
+        "photo_id": file_id,
+        "dishes": result.get("dishes", []),
+        "total_cal": result.get("total_cal"),
+        "health_rating": rating,
+        "analysis": result.get("summary", ""),
+    }
+    meal_log.setdefault("entries", []).append(entry)
+
+    # Calculate streak
+    logged_dates = sorted(set(e["date"] for e in meal_log["entries"]))
+    streak = 0
+    check_date = now.strftime("%Y-%m-%d")
+    for i in range(len(logged_dates) - 1, -1, -1):
+        if logged_dates[i] == check_date:
+            streak += 1
+            check_date = (datetime.strptime(check_date, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        else:
+            break
+    meal_log["current_streak"] = streak
+
+    # Keep last 90 entries
+    meal_log["entries"] = meal_log["entries"][-90:]
+    MEAL_LOG_PATH.write_text(json.dumps(meal_log, indent=2, ensure_ascii=False))
+
+    lines.append("")
+    lines.append(f"连续打卡: {streak} 天")
+
+    return "\n".join(lines)
+
+
 # ================================================================
 # GuardShrimp — 安全虾
 # ================================================================
@@ -1158,10 +1313,217 @@ def reset_decision_chain() -> str:
 # ================================================================
 # Command Router
 # ================================================================
+
+# ================================================================
+# YouTube Match TG (Task 3.6)
+# ================================================================
+def ops_youtube_match_tg(chat_id: str) -> str:
+    """Standalone YouTube matching with interactive Y/E prompts."""
+    log.info("OpsShrimp: YouTube match TG command")
+    tg_send("\U0001f4fa 正在匹配 YouTube 素材库...", chat_id)
+
+    try:
+        sys.path.insert(0, "/home/ec2-user/scripts")
+        from content_pipeline.youtube_matcher import match_hotspots_to_youtube
+
+        local_summary = read_memory("hotspot_summary.json")
+        if not local_summary or not local_summary.get("top_topics"):
+            return "暂无热点数据。请先运行 `热点` 获取数据。"
+
+        topics_for_match = []
+        for t in local_summary["top_topics"][:8]:
+            kws = []
+            for a in t.get("articles", []):
+                kws.extend(a.get("keywords", []))
+            topics_for_match.append({
+                "topic_cluster": t.get("topic", ""),
+                "keywords": list(set(kws))[:10],
+                "hotspot_score": t.get("avg_score", 0),
+            })
+
+        matches = match_hotspots_to_youtube(topics_for_match)
+
+        lines = ["\U0001f4fa *YouTube 素材匹配*", ""]
+        pending_matches = []
+        for i, m in enumerate(matches[:5], 1):
+            topic = m.get("hotspot_topic", "?")
+            mt = m.get("match_type", "none")
+            video = m.get("youtube_video")
+            score_pct = f"{m.get('match_score', 0):.0%}"
+
+            if mt in ("high", "low") and video:
+                title = video.get("title", "?")
+                lines.append(f"{i}. [{topic}] \u2192 \"{title}\" ({score_pct})")
+                lines.append(f"   \U0001f4a1 {m.get('suggestion', '')}")
+                lines.append(f"   回复 `Y{i}` 生成内容")
+            else:
+                lines.append(f"{i}. [{topic}] \u2192 无匹配")
+                lines.append(f"   \U0001f4a1 回复 `E{i}` 启动 AI 扩写")
+            lines.append("")
+
+            pending_matches.append({
+                "topic": topic,
+                "title": video.get("title", "") if video else "",
+                "url": video.get("source_url", "") if video else "",
+                "score": score_pct,
+                "match_type": mt,
+            })
+
+        write_memory("pending_youtube_match.json", {
+            "timestamp": datetime.now().isoformat(),
+            "matches": pending_matches,
+        })
+
+        lines.append("回复 `Y` 生成全部有匹配的内容")
+        return "\n".join(lines)
+
+    except Exception as e:
+        log.error(f"YouTube match TG error: {e}")
+        return f"YouTube 匹配出错: {e}"
+
+
+# ================================================================
+# AI Deep Expand with Perplexity Research (Task 3.9)
+# ================================================================
+def ops_ai_expand_deep(topic: str, chat_id: str) -> str:
+    """AI deep expansion with Perplexity research first."""
+    log.info(f"OpsShrimp: AI deep expand for '{topic}'")
+    tg_send(f"\U0001f4dd *AI 深度扩写已启动*\n话题: {topic}\n预计 3 分钟完成\n\u23f3 调研中... (Perplexity 搜索最新资料)", chat_id)
+
+    # Step 1: Perplexity research
+    research_text = ""
+    try:
+        sys.path.insert(0, "/home/ec2-user/scripts")
+        from hotspot.config import perplexity_search
+        queries = [
+            f"{topic} latest trends analysis 2026",
+            f"{topic} solopreneur AI tools practical guide",
+        ]
+        for q in queries:
+            result = perplexity_search(q)
+            if result.get("answer"):
+                research_text += f"\n\n{result['answer']}"
+                citations = result.get("citations", [])
+                if citations:
+                    research_text += "\n来源: " + ", ".join(citations[:3])
+    except Exception as e:
+        log.warning(f"Perplexity research failed (continuing): {e}")
+
+    tg_send("\u23f3 初稿生成中...", chat_id)
+
+    # Step 2: Generate with research context
+    system_prompt = """你是深度内容创作专家，基于最新调研资料生成三平台内容。
+要求:
+1. 引用调研中的具体数据和案例
+2. 每个平台格式不同:
+   - 微信: 3000字深度长文，密集手绘风配图描述
+   - 小红书: 800字实用分享，网格纸手绘风
+   - X/Twitter: 5条英文Thread
+3. 内容必须有独特观点，不是简单搬运"""
+
+    research_section = research_text if research_text else "(调研未获取到数据，请基于你的知识生成)"
+    prompt = f"话题: {topic}\n\n最新调研资料:\n{research_section}\n\n请生成三平台内容。"
+
+    tg_send("\u23f3 润色中...", chat_id)
+    gen_result = call_gemini(prompt, system=system_prompt, max_tokens=4000)
+
+    # Save draft
+    import hashlib
+    draft_dir = os.path.expanduser("~/.shrimpilot/memory/content_drafts")
+    os.makedirs(draft_dir, exist_ok=True)
+    draft_id = hashlib.md5(f"{topic}{datetime.now().isoformat()}".encode()).hexdigest()[:8]
+    draft_path = os.path.join(draft_dir, f"{draft_id}.json")
+    try:
+        import json as _json
+        with open(draft_path, "w") as f:
+            _json.dump({
+                "id": draft_id,
+                "topic": topic,
+                "type": "ai_expand",
+                "research": research_text[:2000],
+                "content": gen_result,
+                "created_at": datetime.now().isoformat(),
+            }, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    # Update metrics
+    metrics = read_memory("ops_metrics.json")
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if metrics.get("date") != today_str:
+        metrics = {"date": today_str, "content_generated": 0, "content_published": 0}
+    metrics["content_generated"] = metrics.get("content_generated", 0) + 1
+    write_memory("ops_metrics.json", metrics)
+
+    if len(gen_result) > 4000:
+        tg_send(gen_result[:4000] + "\n\n_(Part 1)_", chat_id)
+        remaining = gen_result[4000:]
+        if len(remaining) > 4000:
+            tg_send(remaining[:4000] + "\n\n_(Part 2, 已截断)_", chat_id)
+        else:
+            tg_send(remaining, chat_id)
+        return None
+
+    return "\u2705 AI 深度扩写完成\n\n" + gen_result
+
+
 def handle_message(text: str, chat_id: str) -> str:
     """Route incoming message to the right handler."""
     text = text.strip()
     log.info(f"Received: '{text}' from {chat_id}")
+
+    # /匹配 command — standalone YouTube matching (Task 3.6)
+    if re.match(r"^(匹配|match|/匹配)", text, re.IGNORECASE):
+        return ops_youtube_match_tg(chat_id)
+
+    # User confirms YouTube match: Y (all) or Y1/Y2/Y3 (individual)
+    if re.match(r"^Y\d*$", text.upper()):
+        pending = read_memory("pending_youtube_match.json")
+        if not pending or not pending.get("matches"):
+            return "没有待处理的 YouTube 匹配。先发送 `匹配` 获取推荐。"
+        matches = pending["matches"]
+        idx_str = text.upper().replace("Y", "")
+        if idx_str:
+            idx = int(idx_str) - 1
+            if idx < 0 or idx >= len(matches):
+                return f"无效选择。可用范围: Y1-Y{len(matches)}"
+            m = matches[idx]
+            topic = m.get("topic", "?")
+            yt_title = m.get("title", "?")
+            tg_send(f"📺 正在生成: {topic} (基于 {yt_title})...", chat_id)
+            gen_content = ops_content_gen(f"{topic} - 参考视频: {yt_title}")
+            if gen_content and len(gen_content) > 4000:
+                tg_send(gen_content[:4000] + "\n\n_(内容已截断)_", chat_id)
+                return None
+            return gen_content
+        else:
+            tg_send("📺 开始生成全部匹配素材内容...", chat_id)
+            results = []
+            for m in matches:
+                topic = m.get("topic", "?")
+                yt_title = m.get("title", "?")
+                tg_send(f"⏳ 正在生成: {topic} (基于 {yt_title})...", chat_id)
+                gen_content = ops_content_gen(f"{topic} - 参考视频: {yt_title}")
+                if gen_content and len(gen_content) > 4000:
+                    tg_send(gen_content[:4000] + "\n\n_(内容已截断)_", chat_id)
+                elif gen_content:
+                    tg_send(gen_content, chat_id)
+                results.append(topic)
+            write_memory("pending_youtube_match.json", {})
+            return f"✅ 已完成 {len(results)} 个素材内容生成"
+
+    # E1/E2/E3 — AI expand for specific topic (Task 3.9)
+    if re.match(r"^E\d+$", text.upper()):
+        pending = read_memory("pending_youtube_match.json")
+        if not pending or not pending.get("matches"):
+            return "没有待处理的话题。先发送 `匹配` 获取推荐。"
+        matches = pending["matches"]
+        idx = int(text.upper().replace("E", "")) - 1
+        if idx < 0 or idx >= len(matches):
+            return f"无效选择。可用范围: E1-E{len(matches)}"
+        topic = matches[idx].get("topic", "?")
+        return ops_ai_expand_deep(topic, chat_id)
+
 
     # STATUS — full system status
     if text.upper() == "STATUS":
@@ -1250,7 +1612,8 @@ def handle_message(text: str, chat_id: str) -> str:
             "  `感觉 [1-5]` — 记录情绪\n"
             "  `健康` — 完整健康建议(饮食/饮水/天气/睡眠)\n"
             "  `喝水` — 记录饮水\n"
-            "  `休息` — 记录休息\n\n"
+            "  `休息` — 记录休息\n"
+            "  发送食物照片 — 自动饮食分析\n\n"
             "*GuardShrimp 安全虾*\n"
             "  `扫描` — 安全扫描\n\n"
             "*联动决策链*\n"
@@ -1392,123 +1755,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# ---------------------------------------------------------------------------
-# Meal Photo Analysis (拍照识菜)
-# ---------------------------------------------------------------------------
-def analyze_meal_photo(photo_file_id: str, chat_id: str, caption: str = "") -> str:
-    """Download TG photo, send to Claude Vision for food recognition."""
-    import requests, json, base64, os
-    from pathlib import Path
-    from datetime import datetime
-
-    TG_TOKEN = os.environ.get("TG_SHRIMPILOT_TOKEN", os.environ.get("TG_BOT_TOKEN", "")).strip()
-    ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-
-    if not TG_TOKEN or not ANTHROPIC_KEY:
-        return "API key missing"
-
-    # 1. Download photo from TG
-    file_info = requests.get(f"https://api.telegram.org/bot{TG_TOKEN}/getFile?file_id={photo_file_id}").json()
-    file_path = file_info.get("result", {}).get("file_path", "")
-    if not file_path:
-        return "Failed to get photo file path"
-
-    photo_data = requests.get(f"https://api.telegram.org/file/bot{TG_TOKEN}/{file_path}").content
-    photo_b64 = base64.b64encode(photo_data).decode()
-
-    # 2. Send to Claude Vision
-    headers = {
-        "x-api-key": ANTHROPIC_KEY,
-        "content-type": "application/json",
-        "anthropic-version": "2023-06-01",
-    }
-    body = {
-        "model": "claude-sonnet-4-20250514",
-        "max_tokens": 1024,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": photo_b64}},
-                {"type": "text", "text": f"""Analyze this meal photo. Return a JSON object with:
-{{
-  "dishes": [
-    {{"name": "dish name in Chinese", "cal": estimated_calories_int, "rating": "healthy/moderate/high-fat/high-carb"}}
-  ],
-  "total_cal": total_int,
-  "summary": "one line Chinese summary",
-  "dinner_suggestion": "Chinese dinner suggestion based on this lunch"
-}}
-Caption from user: {caption or 'none'}
-Be specific about Chinese dishes if visible. Estimate calories realistically."""}
-            ]
-        }]
-    }
-    resp = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=body, timeout=30)
-    if resp.status_code != 200:
-        return f"AI analysis failed: {resp.status_code}"
-
-    ai_text = resp.json().get("content", [{}])[0].get("text", "")
-
-    # 3. Parse JSON from response
-    try:
-        # Extract JSON from markdown code block if present
-        if "```" in ai_text:
-            json_str = ai_text.split("```")[1]
-            if json_str.startswith("json"):
-                json_str = json_str[4:]
-            result = json.loads(json_str.strip())
-        else:
-            result = json.loads(ai_text.strip())
-    except Exception:
-        return f"AI analysis result:\n{ai_text}"
-
-    dishes = result.get("dishes", [])
-    total = result.get("total_cal", 0)
-    summary = result.get("summary", "")
-    dinner = result.get("dinner_suggestion", "")
-
-    # 4. Format TG message
-    rating_icons = {"healthy": "🟢", "moderate": "🟡", "high-fat": "🔴", "high-carb": "🟡"}
-    lines = ["*🍽 午餐识别完成*\n"]
-    for i, d in enumerate(dishes, 1):
-        icon = rating_icons.get(d.get("rating", ""), "⚪")
-        lines.append(f"  {i}. {d['name']} — {d.get('cal', '?')}kcal | {icon} {d.get('rating', '')}")
-    lines.append(f"\n📊 总计: {total}kcal")
-    if summary:
-        lines.append(f"💡 {summary}")
-    if dinner:
-        lines.append(f"\n🌙 *晚餐推荐*\n  {dinner}")
-
-    # 5. Save to meals.json for check-in
-    meals_path = Path(os.path.expanduser("~/.shrimpilot/memory/meals.json"))
-    try:
-        meals_data = json.loads(meals_path.read_text()) if meals_path.exists() else {"meals": [], "streak": 0, "calendar": []}
-    except Exception:
-        meals_data = {"meals": [], "streak": 0, "calendar": []}
-
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    meals_data["meals"].append({
-        "date": today,
-        "type": "lunch",
-        "dishes": dishes,
-        "total_cal": total,
-    })
-    if today not in meals_data.get("calendar", []):
-        meals_data.setdefault("calendar", []).append(today)
-
-    # Update streak
-    from datetime import timedelta
-    streak = 0
-    check_date = datetime.utcnow()
-    cal_set = set(meals_data.get("calendar", []))
-    while check_date.strftime("%Y-%m-%d") in cal_set:
-        streak += 1
-        check_date -= timedelta(days=1)
-    meals_data["streak"] = streak
-
-    meals_path.write_text(json.dumps(meals_data, ensure_ascii=False, indent=2))
-    lines.append(f"\n✅ 已打卡！连续打卡 {streak} 天")
-
-    return "\n".join(lines)
