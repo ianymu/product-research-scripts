@@ -73,8 +73,8 @@ def allocate_cycle_id() -> int:
 
 def generate_queries(topic: str) -> dict:
     """Use Claude Haiku to generate platform-specific search queries for the topic."""
-    import anthropic
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    from openai import OpenAI
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", "").strip())
 
     prompt = f"""You are a product research assistant. Generate search queries for investigating this product direction across 4 platforms.
 
@@ -110,9 +110,9 @@ Requirements:
 - IMPORTANT: Subreddit names must NOT include "r/" prefix"""
 
     print("  Calling Claude Haiku to generate queries...")
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=2000,
+    response = client.chat.completions.create(
+        model="gpt-5.4-mini",
+        max_completion_tokens=2000,
         messages=[{"role": "user", "content": prompt}],
     )
 

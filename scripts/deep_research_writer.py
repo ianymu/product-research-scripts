@@ -24,7 +24,7 @@ import time
 from datetime import datetime, timezone
 
 import httpx
-from anthropic import Anthropic
+from openai import OpenAI
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
@@ -34,7 +34,7 @@ PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY", "").strip()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("deep-research-writer")
 
-claude = Anthropic(api_key=ANTHROPIC_API_KEY)
+claude = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", "").strip())
 
 # ── Image Description Templates (Simple 密集手绘风) ────────────────────────
 
@@ -172,12 +172,12 @@ def generate_article(
 
 输出格式：纯 Markdown，直接可用于公众号排版工具（如 Mdnice）。"""
 
-    resp = claude.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=8000,
+    resp = claude.chat.completions.create(
+        model="gpt-5.4",
+        max_completion_tokens=8000,
         messages=[{"role": "user", "content": prompt}],
     )
-    article_md = resp.content[0].text.strip()
+    article_md = resp.choices[0].message.content.strip()
 
     # Generate image descriptions separately for clarity
     img_prompt = f"""基于以下文章，{IMAGE_STYLE_PROMPT}
@@ -197,12 +197,12 @@ def generate_article(
 
 只输出 JSON。"""
 
-    img_resp = claude.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=3000,
+    img_resp = claude.chat.completions.create(
+        model="gemini-2.5-flash-image",
+        max_completion_tokens=3000,
         messages=[{"role": "user", "content": img_prompt}],
     )
-    img_text = img_resp.content[0].text.strip()
+    img_text = img_resp.choices[0].message.content.strip()
 
     try:
         if "```" in img_text:

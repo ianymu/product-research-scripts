@@ -6,7 +6,7 @@ import os
 import json
 import sys
 import requests
-import anthropic
+from openai import OpenAI
 from supabase import create_client
 
 PERPLEXITY_API_KEY = os.environ["PERPLEXITY_API_KEY"].strip()
@@ -46,7 +46,7 @@ def calculate_tam(cycle_id: int, direction_id: str, direction_name: str,
                    english_query: str = "") -> dict:
     """Full TAM/SAM/SOM calculation with trend analysis."""
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", "").strip())
 
     # Research (English query for better results)
     if not english_query:
@@ -72,13 +72,13 @@ Respond in JSON:
   "confidence": "high|medium|low"
 }}"""
 
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2048,
+    resp = client.chat.completions.create(
+        model="gpt-5.4",
+        max_completion_tokens=2048,
         messages=[{"role": "user", "content": prompt}],
     )
 
-    text = resp.content[0].text
+    text = resp.choices[0].message.content
     start = text.find("{")
     end = text.rfind("}") + 1
     result = json.loads(text[start:end])

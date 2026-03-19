@@ -25,8 +25,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-from anthropic import Anthropic
+from openai import OpenAI
 from supabase import create_client
+from pain_aggregator_tg_patch import push_directions_to_tg_v2, CHINESE_INSTRUCTION
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ log = logging.getLogger("pain-aggregator")
 # ── Clients ─────────────────────────────────────────────────────────────────
 
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-claude = Anthropic(api_key=ANTHROPIC_API_KEY)
+llm = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", "").strip())
 
 # ── Step 1: Fetch scored clusters ───────────────────────────────────────────
 
@@ -147,6 +148,8 @@ Below are {len(chunk)} pain point clusters with their scores and JTBD.
 {chunk_text}
 
 Your task: Aggregate these clusters into UNIFIED APPLICATION DIRECTIONS.
+
+重要：所有输出字段必须使用中文，包括 name, one_liner, target_user, problem_statement, value_proposition, mvp_scope, reasoning。唯一例外：competitors 中的产品名可以保留英文原名。
 An application direction = a concrete product that addresses multiple related pain points.
 
 Rules:
@@ -181,12 +184,12 @@ Output a JSON array of direction objects:
 
 Only output valid JSON. No markdown wrapping."""
 
-        resp = claude.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=16000,
+        resp = llm.chat.completions.create(
+            model="gpt-5.4",
+            max_completion_tokens=16000,
             messages=[{"role": "user", "content": prompt}],
         )
-        text = resp.content[0].text.strip()
+        text = resp.choices[0].message.content.strip()
 
         try:
             if "```" in text:
@@ -420,7 +423,7 @@ def main():
 
     # Step 4: TG push (unless dry-run)
     if not args.dry_run:
-        push_directions_to_tg(go_candidates)
+        push_directions_to_tg_v2(go_candidates, all_directions=directions)
 
     # Step 5: Save report (all directions, not just GO candidates)
     save_report(directions, args.output)

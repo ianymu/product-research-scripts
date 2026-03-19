@@ -6,7 +6,7 @@ import os
 import json
 import sys
 import requests
-import anthropic
+from openai import OpenAI
 from supabase import create_client
 
 PERPLEXITY_API_KEY = os.environ["PERPLEXITY_API_KEY"].strip()
@@ -18,7 +18,7 @@ SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"].strip()
 def analyze_competitor(cycle_id: int, direction_id: str, competitor_name: str) -> dict:
     """Deep competitor analysis."""
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", "").strip())
 
     # Research via Perplexity
     headers = {"Authorization": f"Bearer {PERPLEXITY_API_KEY}", "Content-Type": "application/json"}
@@ -53,13 +53,13 @@ Output JSON:
   "differentiation_score": N
 }}"""
 
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
+    resp = client.chat.completions.create(
+        model="gpt-5.4",
+        max_completion_tokens=4096,
         messages=[{"role": "user", "content": prompt}],
     )
 
-    text = resp.content[0].text
+    text = resp.choices[0].message.content
     start = text.find("{")
     end = text.rfind("}") + 1
     result = json.loads(text[start:end])

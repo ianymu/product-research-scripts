@@ -30,31 +30,9 @@ except ImportError:
 
 
 def _claude_generate(system: str, user_prompt: str, max_tokens: int = 4000) -> str:
-    """Call Claude for content generation."""
-    if not ANTHROPIC_KEY:
-        log.error("ANTHROPIC_API_KEY not set")
-        return ""
-    try:
-        with httpx.Client(timeout=120) as client:
-            resp = client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": "claude-sonnet-4-6-20250514",
-                    "max_tokens": max_tokens,
-                    "system": system,
-                    "messages": [{"role": "user", "content": user_prompt}],
-                },
-            )
-            data = resp.json()
-            return data.get("content", [{}])[0].get("text", "")
-    except Exception as e:
-        log.error(f"Claude generation error: {e}")
-        return ""
+    """Generate content via ChatGPT 5.4 (was Claude Sonnet)."""
+    from llm_client import call_llm
+    return call_llm("chatgpt-5.4-thinking", system, user_prompt, max_tokens=max_tokens)
 
 
 def _research_topic(topic: str, keywords: list[str]) -> dict:

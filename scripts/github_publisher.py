@@ -80,7 +80,7 @@ Style:
 Output pure Markdown, no wrapping."""
 
     resp = claude.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-opus-4-6",
         max_tokens=4000,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -126,7 +126,7 @@ Color scheme: Dark bg (#0a0a0a), accent color auto-chosen based on product type.
 Output pure HTML, no wrapping."""
 
     resp = claude.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-opus-4-6",
         max_tokens=8000,
         messages=[{"role": "user", "content": prompt}],
     )

@@ -37,8 +37,8 @@ SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"].strip()
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"].strip()
 
 EMBED_MODEL = "text-embedding-3-small"
-LLM_MODEL = "gpt-4o"  # cheaper than gpt-5.2 for classification tasks
-LLM_MODEL_SMART = "gpt-4o"  # combination reasoning
+LLM_MODEL = "gpt-5.4-mini"  # cheaper than gpt-5.2 for classification tasks
+LLM_MODEL_SMART = "gpt-5.4-mini"  # combination reasoning
 
 DEDUP_THRESHOLD = 0.82
 PAGE_SIZE = 1000

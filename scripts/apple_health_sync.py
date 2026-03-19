@@ -463,6 +463,41 @@ def run_server(port: int = 3001):
             }
         ), 200
 
+
+    @app.route("/api/health", methods=["GET"])
+    def health_dashboard():
+        """Dashboard data for health.html frontend."""
+        health_log = load_json(HEALTH_LOG_PATH, {})
+        daily_history = health_log.get("daily_history", [])
+        sd = health_log.get("sleep_data", {})
+        history = []
+        for d in daily_history[-8:]:
+            history.append({
+                "date": d.get("date", ""),
+                "sleep_hours": d.get("sleep_hours", 0),
+                "deep_pct": d.get("deep_pct"),
+                "rem_pct": d.get("rem_pct"),
+                "efficiency": d.get("efficiency"),
+                "resting_hr": d.get("resting_hr"),
+                "hrv": d.get("hrv"),
+            })
+        return jsonify({
+            "today": {
+                "sleep_hours_estimated": health_log.get("sleep_hours_estimated"),
+                "resting_hr_bpm": health_log.get("resting_hr_bpm"),
+                "hrv_latest_ms": health_log.get("hrv_latest_ms"),
+                "sleep_data": sd,
+            },
+            "history": history,
+        }), 200
+
+    @app.route("/api/meals", methods=["GET"])
+    def meals_api():
+        """Meal check-in data for health.html frontend."""
+        meals_path = Path(HEALTH_LOG_PATH).parent / "meals.json"
+        meals_data = load_json(meals_path, {"meals": [], "streak": 0, "calendar": []})
+        return jsonify(meals_data), 200
+
     @app.route("/api/health/status", methods=["GET"])
     def health_status():
         health_log = load_json(HEALTH_LOG_PATH, {})

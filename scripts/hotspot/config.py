@@ -7,6 +7,9 @@ hotspot/config.py — OpsShrimp v2 配置中心
 """
 import os
 import sys
+if "/home/ec2-user/scripts" not in sys.path:
+    sys.path.insert(0, "/home/ec2-user/scripts")
+import sys
 import json
 import re
 import hashlib
@@ -39,8 +42,7 @@ TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "").strip()
 # === 对标账号列表 ===
 
 WECHAT_ACCOUNTS = [
-    "量子位", "机器之心", "新智元", "36氪", "晚点LatePost",
-    "歸藏的AI工具箱", "生财有术", "阿小信", "码力全开", "独立开发者", "小报童精选",
+    "AGI Hunt", "新智元", "AI信息Gap", "51CTO技术栈", "机器之心", "智东西", "量子位",
 ]
 
 XHS_ACCOUNTS = [
@@ -172,32 +174,25 @@ Only include real, verifiable content. Do NOT fabricate data."""
 
 
 def extract_keywords_and_topics(text: str, platform: str) -> list[dict]:
-    if not ANTHROPIC_KEY:
-        log.warning("ANTHROPIC_API_KEY not set, using regex fallback")
-        return _regex_keyword_extract(text, platform)
     try:
-        with httpx.Client(timeout=60) as client:
-            resp = client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": "claude-sonnet-4-6-20250514",
-                    "max_tokens": 3000,
-                    "system": EXTRACTION_SYSTEM,
-                    "messages": [{"role": "user", "content": f"Platform: {platform}\n\nRaw data:\n{text[:8000]}"}],
-                },
-            )
-            data = resp.json()
-            content = data.get("content", [{}])[0].get("text", "")
-            match = re.search(r'\[.*\]', content, re.DOTALL)
-            if match:
-                return json.loads(match.group())
+        from llm_client import call_llm
+        result = call_llm(
+            "chatgpt-5.4-thinking",
+            EXTRACTION_SYSTEM,
+            f"Platform: {platform}\n\nRaw data:\n{text[:8000]}",
+            max_tokens=3000,
+        )
+        cleaned = result.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+        match = re.search(r'\[.*\]', cleaned, re.DOTALL)
+        if match:
+            return json.loads(match.group())
     except Exception as e:
-        log.error(f"Claude extraction error: {e}")
+        log.error(f"ChatGPT extraction error: {e}")
     return _regex_keyword_extract(text, platform)
 
 

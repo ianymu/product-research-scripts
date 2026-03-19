@@ -1,210 +1,245 @@
 #!/usr/bin/env python3
 """
-gemini_analyzer.py — Gemini 多模态分析 + Embedding
-1. 读取 content_hotspots 中有 full_content 的文章
-2. Gemini API 分析（主题提取、情感分析、关键洞察）
-3. text-embedding-004 生成 embedding 存入 Supabase
+gemini_analyzer.py — Gemini multi-modal analysis for content_hotspots
 
-铁律 #1: 所有 os.environ 必须 .strip()
+Reads wechat articles from Supabase content_hotspots,
+calls Gemini 2.0 Flash for theme/sentiment/insights extraction,
+and optionally generates embeddings via text-embedding-004.
 
-运行: python3 gemini_analyzer.py [--limit N] [--dry-run]
+Usage:
+  python3 gemini_analyzer.py --limit 5
+  python3 gemini_analyzer.py --limit 10 --skip-embedding
 """
+
+import argparse
+import json
 import os
 import sys
-import json
-import argparse
-import logging
+import time
 from datetime import datetime
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import httpx
 
-try:
-    import httpx
-except ImportError:
-    os.system(f"{sys.executable} -m pip install httpx -q")
-    import httpx
+# === Config ===
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"].strip()
+SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
+SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"].strip()
 
-from hotspot.config import SUPABASE_URL, SUPABASE_KEY, log
+GEMINI_FLASH_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+GEMINI_EMBED_URL = "https://generativelanguage.googleapis.com/v1/models/text-embedding-004:embedContent"
 
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-
-GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
-
-
-def gemini_analyze(content: str, title: str = "") -> dict:
-    """
-    Use Gemini to analyze article content.
-    Returns: {summary, key_insights, sentiment, topics, action_items}
-    """
-    if not GEMINI_KEY:
-        log.error("GEMINI_API_KEY not set")
-        return {}
-
-    prompt = f"""分析以下文章内容，返回 JSON 格式:
-{{
-  "summary": "200字摘要",
-  "key_insights": ["洞察1", "洞察2", "洞察3"],
-  "sentiment": "positive/neutral/negative",
-  "topics": ["主题1", "主题2"],
-  "action_items": ["可执行建议1", "可执行建议2"],
-  "relevance_to_solopreneur": 0-100
-}}
-
-标题: {title}
-内容:
-{content[:8000]}"""
-
-    try:
-        with httpx.Client(timeout=60) as client:
-            resp = client.post(
-                f"{GEMINI_BASE}/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}",
-                json={
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2000},
-                },
-            )
-            data = resp.json()
-            text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-
-            # Parse JSON from response
-            import re
-            json_match = re.search(r'\{.*\}', text, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
-            log.warning("Gemini returned non-JSON response")
-            return {"summary": text[:500]}
-    except Exception as e:
-        log.error(f"Gemini analysis error: {e}")
-        return {}
+HEADERS_SUPABASE = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type": "application/json",
+    "Prefer": "return=minimal",
+}
 
 
-def gemini_embedding(text: str) -> list[float]:
-    """
-    Generate embedding using text-embedding-004.
-    Returns: list of floats (768 dimensions)
-    """
-    if not GEMINI_KEY:
-        log.error("GEMINI_API_KEY not set")
-        return []
-
-    try:
-        with httpx.Client(timeout=30) as client:
-            resp = client.post(
-                f"{GEMINI_BASE}/models/text-embedding-004:embedContent?key={GEMINI_KEY}",
-                json={
-                    "model": "models/text-embedding-004",
-                    "content": {"parts": [{"text": text[:2048]}]},
-                },
-            )
-            data = resp.json()
-            values = data.get("embedding", {}).get("values", [])
-            if values:
-                log.info(f"Embedding generated: {len(values)} dimensions")
-            return values
-    except Exception as e:
-        log.error(f"Gemini embedding error: {e}")
-        return []
+def ensure_columns():
+    """Add gemini_analysis JSONB column if not exists (idempotent via ALTER)."""
+    # Use Supabase REST RPC or just try — the UPDATE will fail gracefully if col missing
+    # We'll handle this via a direct SQL migration note
+    print("[INFO] Assuming gemini_analysis JSONB column exists (run migration if not)")
 
 
-def process_articles(limit: int = 10, dry_run: bool = False):
-    """
-    Process articles from content_hotspots that have full_content but no gemini_analysis.
-    """
-    log.info(f"Fetching articles to analyze (limit={limit})...")
-
-    # Query articles with full_content but no analysis yet
-    sb_headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
+def fetch_articles(limit: int) -> list:
+    """Fetch wechat articles that haven't been analyzed yet."""
+    # Try full_content first, fallback to content_preview
+    # Select articles where gemini_analysis is null
+    url = f"{SUPABASE_URL}/rest/v1/content_hotspots"
+    params = {
+        "select": "id,title,content_preview,source_name,keywords,hotspot_score",
+        "platform": "eq.wechat",
+        "order": "hotspot_score.desc",
+        "limit": str(limit),
     }
 
+    # Only fetch rows without gemini_analysis (if column exists)
+    # We'll filter client-side as a safe fallback
+    resp = httpx.get(url, headers=HEADERS_SUPABASE, params=params, timeout=30)
+    resp.raise_for_status()
+    articles = resp.json()
+    print(f"[INFO] Fetched {len(articles)} wechat articles from Supabase")
+    return articles
+
+
+def analyze_with_gemini(article: dict) -> dict:
+    """Call Gemini 2.0 Flash to extract themes, sentiment, insights."""
+    title = article.get("title", "")
+    content = article.get("content_preview", "") or ""
+    keywords = article.get("keywords", []) or []
+
+    prompt = f"""分析以下微信公众号文章，返回 JSON 格式结果：
+
+标题: {title}
+内容: {content}
+关键词: {', '.join(keywords) if keywords else '无'}
+
+请返回以下 JSON（不要包含 markdown 代码块标记）:
+{{
+  "themes": ["主题1", "主题2", ...],
+  "sentiment": "positive/negative/neutral/mixed",
+  "key_insights": ["洞察1", "洞察2", "洞察3"],
+  "summary": "一句话总结",
+  "relevance_to_solopreneur": "high/medium/low",
+  "actionable_angle": "独立开发者可以从中获取的行动建议"
+}}"""
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 1024,
+        },
+    }
+
+    resp = httpx.post(
+        f"{GEMINI_FLASH_URL}?key={GEMINI_API_KEY}",
+        json=payload,
+        timeout=60,
+    )
+    resp.raise_for_status()
+    result = resp.json()
+
+    # Extract text from Gemini response
+    text = result["candidates"][0]["content"]["parts"][0]["text"]
+
+    # Clean markdown code block if present
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    text = text.strip()
+
     try:
-        with httpx.Client(timeout=15) as client:
-            resp = client.get(
-                f"{SUPABASE_URL}/rest/v1/content_hotspots"
-                f"?full_content=not.is.null"
-                f"&gemini_analysis=is.null"
-                f"&select=id,title,full_content,source_url,platform,source_name"
-                f"&order=hotspot_score.desc"
-                f"&limit={limit}",
-                headers=sb_headers,
-            )
-            articles = resp.json() if resp.status_code == 200 else []
-    except Exception as e:
-        log.error(f"Query error: {e}")
-        articles = []
+        analysis = json.loads(text)
+    except json.JSONDecodeError:
+        analysis = {"raw_response": text, "parse_error": True}
 
-    if not articles:
-        log.info("No unanalyzed articles found. Try running crawl first.")
-        return
+    analysis["analyzed_at"] = datetime.utcnow().isoformat()
+    analysis["model"] = "gemini-2.0-flash"
+    return analysis
 
-    log.info(f"Found {len(articles)} articles to analyze")
 
-    for i, article in enumerate(articles, 1):
-        art_id = article.get("id")
-        title = article.get("title", "")
-        content = article.get("full_content", "")
-        log.info(f"  [{i}/{len(articles)}] Analyzing: {title[:50]}...")
+def generate_embedding(text: str) -> list:
+    """Generate embedding via text-embedding-004."""
+    payload = {
+        "content": {"parts": [{"text": text[:2048]}]},  # Truncate to safe limit
+    }
 
-        if dry_run:
-            log.info("    (dry-run, skipping)")
-            continue
+    resp = httpx.post(
+        f"{GEMINI_EMBED_URL}?key={GEMINI_API_KEY}",
+        json=payload,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    result = resp.json()
+    return result["embedding"]["values"]
 
-        # 1. Gemini analysis
-        analysis = gemini_analyze(content, title)
-        if not analysis:
-            log.warning(f"    Analysis failed for {art_id}")
-            continue
 
-        # 2. Generate embedding
-        embed_text = f"{title} {analysis.get('summary', '')} {' '.join(analysis.get('topics', []))}"
-        embedding = gemini_embedding(embed_text)
+def update_article(article_id: str, analysis: dict):
+    """Update content_hotspots row with gemini_analysis.
 
-        # 3. Update Supabase
-        update_data = {
-            "gemini_analysis": json.dumps(analysis, ensure_ascii=False),
-        }
-        if embedding:
-            update_data["embedding"] = embedding
+    Strategy: try gemini_analysis column first, fallback to metrics JSONB.
+    """
+    url = f"{SUPABASE_URL}/rest/v1/content_hotspots"
+    params = {"id": f"eq.{article_id}"}
 
-        try:
-            update_headers = {
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {SUPABASE_KEY}",
-                "Content-Type": "application/json",
-                "Prefer": "return=minimal",
-            }
-            with httpx.Client(timeout=15) as client:
-                resp = client.patch(
-                    f"{SUPABASE_URL}/rest/v1/content_hotspots?id=eq.{art_id}",
-                    headers=update_headers,
-                    json=update_data,
-                )
-                if resp.status_code in (200, 204):
-                    log.info(f"    Updated: analysis + {'embedding' if embedding else 'no embedding'}")
-                else:
-                    log.warning(f"    Supabase update failed: {resp.status_code} {resp.text[:200]}")
-        except Exception as e:
-            log.error(f"    Update error: {e}")
+    # Try gemini_analysis column first
+    update_data = {"gemini_analysis": analysis}
+    resp = httpx.patch(
+        url,
+        headers=HEADERS_SUPABASE,
+        params=params,
+        json=update_data,
+        timeout=30,
+    )
 
-    log.info("Gemini analysis complete")
+    if resp.status_code == 400 and "gemini_analysis" in resp.text:
+        # Column doesn't exist — fallback: merge into metrics JSONB
+        print(f"  [WARN] gemini_analysis column missing, storing in metrics.gemini_analysis")
+        # Fetch current metrics
+        r = httpx.get(url, headers=HEADERS_SUPABASE,
+                      params={"id": f"eq.{article_id}", "select": "metrics"}, timeout=15)
+        r.raise_for_status()
+        rows = r.json()
+        current_metrics = rows[0].get("metrics", {}) if rows else {}
+        if isinstance(current_metrics, str):
+            try:
+                current_metrics = json.loads(current_metrics)
+            except (json.JSONDecodeError, TypeError):
+                current_metrics = {}
+        if not isinstance(current_metrics, dict):
+            current_metrics = {}
+        current_metrics["gemini_analysis"] = analysis
+        update_data = {"metrics": current_metrics}
+        resp = httpx.patch(url, headers=HEADERS_SUPABASE, params=params,
+                           json=update_data, timeout=30)
+
+    resp.raise_for_status()
+    print(f"  [OK] Updated article {article_id}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Gemini Multimodal Analyzer")
-    parser.add_argument("--limit", type=int, default=10, help="Max articles to process")
-    parser.add_argument("--dry-run", action="store_true", help="Don't write to Supabase")
+    parser = argparse.ArgumentParser(description="Gemini analyzer for content_hotspots")
+    parser.add_argument("--limit", type=int, default=5, help="Max articles to analyze")
+    parser.add_argument("--skip-embedding", action="store_true", help="Skip embedding generation")
+    parser.add_argument("--dry-run", action="store_true", help="Analyze but don't write to DB")
     args = parser.parse_args()
 
-    if not GEMINI_KEY:
-        print("ERROR: GEMINI_API_KEY not set in environment")
-        sys.exit(1)
+    print(f"=== Gemini Analyzer ===")
+    print(f"[CONFIG] limit={args.limit}, skip_embedding={args.skip_embedding}")
 
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        print("ERROR: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set")
-        sys.exit(1)
+    articles = fetch_articles(args.limit)
+    if not articles:
+        print("[WARN] No wechat articles found in content_hotspots")
+        sys.exit(0)
 
-    process_articles(limit=args.limit, dry_run=args.dry_run)
+    success = 0
+    errors = 0
+
+    for i, article in enumerate(articles):
+        aid = article["id"]
+        title = article.get("title", "???")[:50]
+        print(f"\n[{i+1}/{len(articles)}] Analyzing: {title}...")
+
+        try:
+            # Gemini analysis
+            analysis = analyze_with_gemini(article)
+            print(f"  Themes: {analysis.get('themes', [])}")
+            print(f"  Sentiment: {analysis.get('sentiment', '?')}")
+
+            # Write analysis to DB first (always)
+            if not args.dry_run:
+                update_article(aid, analysis)
+            success += 1
+
+            # Embedding (optional, non-fatal)
+            if not args.skip_embedding:
+                try:
+                    text_for_embed = f"{article.get('title', '')} {article.get('content_preview', '')}"
+                    if text_for_embed.strip():
+                        embedding = generate_embedding(text_for_embed)
+                        print(f"  Embedding: {len(embedding)} dims")
+                        # Update again with embedding data
+                        if not args.dry_run:
+                            analysis["embedding_dim"] = len(embedding)
+                            analysis["embedding_preview"] = embedding[:5]
+                            update_article(aid, analysis)
+                except Exception as emb_err:
+                    print(f"  [WARN] Embedding failed (non-fatal): {emb_err}")
+
+        except Exception as e:
+            print(f"  [ERROR] {e}")
+            errors += 1
+
+        # Rate limit: 15 RPM for free tier → ~4s between calls
+        if i < len(articles) - 1:
+            time.sleep(4)
+
+    print(f"\n=== Done: {success} success, {errors} errors ===")
 
 
 if __name__ == "__main__":

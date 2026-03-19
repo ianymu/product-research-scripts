@@ -217,7 +217,7 @@ IMPORTANT:
 Output the complete HTML file. Nothing else."""
 
     resp = claude.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-opus-4-6",
         max_tokens=16000,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -282,7 +282,7 @@ Fix the issues described in the feedback. Output the COMPLETE updated HTML file.
 Maintain the same quality and design system. Only fix what the user mentioned."""
 
         resp = claude.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-opus-4-6",
             max_tokens=16000,
             messages=[{"role": "user", "content": fix_prompt}],
         )

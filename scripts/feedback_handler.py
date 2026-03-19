@@ -1,3 +1,7 @@
+import sys
+if "/home/ec2-user/scripts" not in sys.path:
+    sys.path.insert(0, "/home/ec2-user/scripts")
+from llm_client import call_llm_vision
 #!/usr/bin/env python3
 """
 Feedback Handler — TG 截图反馈 → Vision 识别 → 定向修改 → 重新部署
@@ -24,7 +28,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from anthropic import Anthropic
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
@@ -38,7 +41,6 @@ os.makedirs(FEEDBACK_DIR, exist_ok=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("feedback-handler")
 
-claude = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 # ── TG Helpers ──────────────────────────────────────────────────────────────
 
@@ -103,66 +105,26 @@ def tg_send(text: str) -> bool:
 
 # ── Vision Analysis ─────────────────────────────────────────────────────────
 
-def analyze_screenshot(image_data: bytes, user_description: str = "") -> dict:
-    """Use Claude Vision to analyze a UI screenshot and identify issues."""
-    log.info("Analyzing screenshot (%d bytes) with description: %s", len(image_data), user_description[:100])
-
-    b64_image = base64.b64encode(image_data).decode("utf-8")
-
+def analyze_screenshot(image_data: str, user_description: str = "") -> dict:
+    """Analyze screenshot via Gemini Vision."""
+    from llm_client import call_llm_vision
+    import json
     prompt = f"""You are a senior UI/UX designer reviewing a product screenshot.
-
-User's feedback: "{user_description or 'No description provided'}"
-
-Analyze the screenshot and provide:
-1. **issues**: Array of identified UI/UX problems (each with severity: critical/major/minor)
-2. **suggestions**: Specific, actionable fix suggestions with CSS/HTML snippets where applicable
-3. **positive**: What's working well (brief)
-
-Output a JSON object:
+Analyze and output JSON:
 {{
-  "issues": [
-    {{"id": 1, "severity": "critical", "area": "navigation", "description": "...", "fix": "CSS/HTML snippet or description"}},
-    ...
-  ],
-  "suggestions": ["...", "..."],
-  "positive": ["...", "..."],
-  "overall_quality": "poor|fair|good|excellent",
-  "priority_fix": "The single most important thing to fix first"
+  "issues": [{{"severity": "high/medium/low", "area": "...", "description": "...", "fix": "..."}}],
+  "suggestions": ["..."],
+  "positive": ["..."],
+  "overall_quality": "good/fair/poor",
+  "priority_fix": "..."
 }}
-
-Only output valid JSON."""
-
-    resp = claude.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4000,
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/png",
-                        "data": b64_image,
-                    },
-                },
-                {"type": "text", "text": prompt},
-            ],
-        }],
-    )
-    text = resp.content[0].text.strip()
-
+User feedback: {user_description}"""
+    result = call_llm_vision("gemini-flash", "", prompt, image_data, max_tokens=4000)
     try:
-        if "```" in text:
-            text = text.split("```")[1].strip()
-            if text.startswith("json"):
-                text = text[4:].strip()
-        return json.loads(text)
-    except (json.JSONDecodeError, IndexError):
-        return {"error": "Parse failed", "raw": text[:500]}
+        return json.loads(result)
+    except:
+        return {{"raw": result}}
 
-
-# ── Feedback Processing ────────────────────────────────────────────────────
 
 def process_feedback(image_data: bytes, description: str, source: str = "tg") -> dict:
     """Full feedback processing pipeline."""

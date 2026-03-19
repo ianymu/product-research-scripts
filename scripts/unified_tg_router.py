@@ -119,6 +119,11 @@ SHRIMP_ROUTES = [
     # GuardShrimp — 安全虾
     (r"^(扫描|scan|audit)", "guard_shrimp", "scan"),
 
+    # ResearchShrimp — 产研虾
+    (r"^(演示|demo)$", "research_shrimp", "demo"),
+    (r"^(产研日报|产研简报|research brief)", "research_shrimp", "brief"),
+    (r"^(产研建议|产研推荐|research suggest)", "research_shrimp", "suggest"),
+
     # Decision chain
     (r"^(联动|chain|决策链|link)", "system", "chain"),
     (r"^(重置|reset)", "system", "reset"),
@@ -137,9 +142,12 @@ def route_message(text: str, has_photo: bool = False) -> tuple[str, str, str]:
     text = text.strip()
     upper = text.upper().split()[0] if text else ""
 
-    # Photo + any text → feedback handler
+    # Photo without specific feedback text → meal analysis (CareShrimp)
+    # Photo + feedback keywords → feedback handler
     if has_photo:
-        return "feedback", "screenshot", text
+        if text and any(w in text.lower() for w in ["反馈", "feedback", "bug", "修改", "fix"]):
+            return "feedback", "screenshot", text
+        return "care_shrimp", "meal_photo", text
 
     # V7 exact commands
     if upper in V7_COMMANDS:
@@ -187,7 +195,12 @@ def get_help_text() -> str:
         "  `健康` — 4 维健康建议\n"
         "  `喝水` — 记录饮水\n"
         "  `休息` — 记录休息\n"
-        "  `静音 2h` — 静音提醒\n\n"
+        "  `静音 2h` — 静音提醒\n"
+        "  发送食物照片 — 自动饮食分析\n\n"
+        "*━━━ ResearchShrimp 产研虾 ━━━*\n"
+        "  `演示` / `demo` — 9-Agent 全链路演示\n"
+        "  `产研日报` — 痛点波动日报\n"
+        "  `产研建议` — AI 方向推荐\n\n"
         "*━━━ GuardShrimp 安全虾 ━━━*\n"
         "  `扫描` — 安全审计\n\n"
         "*━━━ 联动 ━━━*\n"
@@ -239,14 +252,58 @@ def main():
             text = msg.get("text", "") or msg.get("caption", "")
             has_photo = bool(msg.get("photo"))
 
+            # Handle voice messages via shrimpilot_bot.transcribe_voice
+            voice = msg.get("voice")
+            if voice and not text and bot_module and hasattr(bot_module, "transcribe_voice"):
+                file_id = voice["file_id"]
+                tg_send("🎙 正在识别语音...", chat_id)
+                transcribed = bot_module.transcribe_voice(file_id)
+                tg_send(f"🎙 语音识别：{transcribed}", chat_id)
+                text = transcribed  # Process as normal text below
+
+            # Extract photo file_id (largest size = last element)
+            photo_file_id = msg["photo"][-1]["file_id"] if msg.get("photo") else None
+
             agent, action, cleaned = route_message(text, has_photo)
             log.info("[Route] '%s' → agent=%s, action=%s", text[:50], agent, action)
 
             # Dispatch
             response = None
 
-            if agent == "system" and action == "help":
+            if agent == "care_shrimp" and action == "meal_photo" and photo_file_id and bot_module:
+                tg_send("正在识别菜品...", chat_id)
+                try:
+                    response = bot_module.analyze_meal_photo(photo_file_id, chat_id, cleaned)
+                except Exception as e:
+                    response = f"菜品识别失败: {e}"
+                    log.error("Meal photo error: %s", e, exc_info=True)
+            elif agent == "system" and action == "help":
                 response = get_help_text()
+            elif agent == "research_shrimp" and action == "demo":
+                # 9-Agent coordination demo
+                tg_send("🚀 *启动 9-Agent 全链路协调演示...*", chat_id)
+                try:
+                    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                    import demo_coordination
+                    importlib.reload(demo_coordination)
+                    demo_coordination.run_demo(chat_id)
+                    response = None  # demo sends its own messages
+                except Exception as e:
+                    response = f"⚠️ 演示启动失败: {e}"
+                    log.error("Demo error: %s", e, exc_info=True)
+            elif agent == "research_shrimp" and action == "brief":
+                # Research morning brief
+                try:
+                    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                    import research_morning_brief
+                    importlib.reload(research_morning_brief)
+                    brief_text = research_morning_brief.run_brief()
+                    response = brief_text
+                except Exception as e:
+                    response = f"⚠️ 产研日报生成失败: {e}"
+                    log.error("Brief error: %s", e, exc_info=True)
+            elif agent == "research_shrimp" and action == "suggest":
+                response = "🔬 产研建议功能开发中...\n发送 `产研日报` 查看最新痛点排名"
             elif agent == "unknown":
                 response = f"未识别: `{text[:30]}`\n发送 `帮助` 查看命令"
             elif bot_module:

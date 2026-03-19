@@ -25,46 +25,12 @@ WECHAT_SCRIPT = CONTENT_AUTO_BASE / "wechat" / "process_article.py"
 REDNOTES_SCRIPT = CONTENT_AUTO_BASE / "rednotes" / "process_rednotes.py"
 
 
-def generate_x_thread(title: str, summary: str, keywords: list[str]) -> str:
-    """Generate X/Twitter thread from YouTube content via Claude."""
-    if not ANTHROPIC_KEY:
-        return f"🧵 {title}\n\n{summary[:200]}\n\n#{'  #'.join(keywords[:3])}"
-
-    try:
-        import httpx
-        with httpx.Client(timeout=60) as client:
-            resp = client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": "claude-sonnet-4-6-20250514",
-                    "max_tokens": 1500,
-                    "system": (
-                        "You write engaging X/Twitter threads. Rules:\n"
-                        "- Thread of 3-5 tweets, each under 280 chars\n"
-                        "- First tweet is a hook that grabs attention\n"
-                        "- Use emojis sparingly (1-2 per tweet max)\n"
-                        "- End with a call-to-action or question\n"
-                        "- Include 2-3 relevant hashtags in last tweet\n"
-                        "- Write in English (the audience is global)\n"
-                        "- Separate tweets with '---'\n"
-                        "- Sound like a real person, NOT like AI"
-                    ),
-                    "messages": [{
-                        "role": "user",
-                        "content": f"Topic: {title}\nSummary: {summary}\nKeywords: {', '.join(keywords)}",
-                    }],
-                },
-            )
-            data = resp.json()
-            return data.get("content", [{}])[0].get("text", "")
-    except Exception as e:
-        log.error(f"X thread generation error: {e}")
-        return f"🧵 {title}\n\n{summary[:200]}"
+def generate_x_thread(title: str, summary: str, keywords: list[str] = None) -> str:
+    """Generate X/Twitter thread via ChatGPT 5.4 mini."""
+    from llm_client import call_llm
+    system = "You are a professional X/Twitter thread writer. Write 3-5 tweets, each under 280 characters. Use emojis sparingly. End with a CTA and hashtags. Write in English. Separate tweets with ---"
+    user = f"Title: {title}\nSummary: {summary}\nKeywords: {, .join(keywords) if keywords else }"
+    return call_llm("chatgpt-5.4-mini", system, user, max_tokens=1500)
 
 
 def generate_from_youtube(match: dict) -> dict:

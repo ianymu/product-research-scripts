@@ -1392,3 +1392,123 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# Meal Photo Analysis (拍照识菜)
+# ---------------------------------------------------------------------------
+def analyze_meal_photo(photo_file_id: str, chat_id: str, caption: str = "") -> str:
+    """Download TG photo, send to Claude Vision for food recognition."""
+    import requests, json, base64, os
+    from pathlib import Path
+    from datetime import datetime
+
+    TG_TOKEN = os.environ.get("TG_SHRIMPILOT_TOKEN", os.environ.get("TG_BOT_TOKEN", "")).strip()
+    ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+
+    if not TG_TOKEN or not ANTHROPIC_KEY:
+        return "API key missing"
+
+    # 1. Download photo from TG
+    file_info = requests.get(f"https://api.telegram.org/bot{TG_TOKEN}/getFile?file_id={photo_file_id}").json()
+    file_path = file_info.get("result", {}).get("file_path", "")
+    if not file_path:
+        return "Failed to get photo file path"
+
+    photo_data = requests.get(f"https://api.telegram.org/file/bot{TG_TOKEN}/{file_path}").content
+    photo_b64 = base64.b64encode(photo_data).decode()
+
+    # 2. Send to Claude Vision
+    headers = {
+        "x-api-key": ANTHROPIC_KEY,
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01",
+    }
+    body = {
+        "model": "claude-sonnet-4-20250514",
+        "max_tokens": 1024,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": photo_b64}},
+                {"type": "text", "text": f"""Analyze this meal photo. Return a JSON object with:
+{{
+  "dishes": [
+    {{"name": "dish name in Chinese", "cal": estimated_calories_int, "rating": "healthy/moderate/high-fat/high-carb"}}
+  ],
+  "total_cal": total_int,
+  "summary": "one line Chinese summary",
+  "dinner_suggestion": "Chinese dinner suggestion based on this lunch"
+}}
+Caption from user: {caption or 'none'}
+Be specific about Chinese dishes if visible. Estimate calories realistically."""}
+            ]
+        }]
+    }
+    resp = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=body, timeout=30)
+    if resp.status_code != 200:
+        return f"AI analysis failed: {resp.status_code}"
+
+    ai_text = resp.json().get("content", [{}])[0].get("text", "")
+
+    # 3. Parse JSON from response
+    try:
+        # Extract JSON from markdown code block if present
+        if "```" in ai_text:
+            json_str = ai_text.split("```")[1]
+            if json_str.startswith("json"):
+                json_str = json_str[4:]
+            result = json.loads(json_str.strip())
+        else:
+            result = json.loads(ai_text.strip())
+    except Exception:
+        return f"AI analysis result:\n{ai_text}"
+
+    dishes = result.get("dishes", [])
+    total = result.get("total_cal", 0)
+    summary = result.get("summary", "")
+    dinner = result.get("dinner_suggestion", "")
+
+    # 4. Format TG message
+    rating_icons = {"healthy": "🟢", "moderate": "🟡", "high-fat": "🔴", "high-carb": "🟡"}
+    lines = ["*🍽 午餐识别完成*\n"]
+    for i, d in enumerate(dishes, 1):
+        icon = rating_icons.get(d.get("rating", ""), "⚪")
+        lines.append(f"  {i}. {d['name']} — {d.get('cal', '?')}kcal | {icon} {d.get('rating', '')}")
+    lines.append(f"\n📊 总计: {total}kcal")
+    if summary:
+        lines.append(f"💡 {summary}")
+    if dinner:
+        lines.append(f"\n🌙 *晚餐推荐*\n  {dinner}")
+
+    # 5. Save to meals.json for check-in
+    meals_path = Path(os.path.expanduser("~/.shrimpilot/memory/meals.json"))
+    try:
+        meals_data = json.loads(meals_path.read_text()) if meals_path.exists() else {"meals": [], "streak": 0, "calendar": []}
+    except Exception:
+        meals_data = {"meals": [], "streak": 0, "calendar": []}
+
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    meals_data["meals"].append({
+        "date": today,
+        "type": "lunch",
+        "dishes": dishes,
+        "total_cal": total,
+    })
+    if today not in meals_data.get("calendar", []):
+        meals_data.setdefault("calendar", []).append(today)
+
+    # Update streak
+    from datetime import timedelta
+    streak = 0
+    check_date = datetime.utcnow()
+    cal_set = set(meals_data.get("calendar", []))
+    while check_date.strftime("%Y-%m-%d") in cal_set:
+        streak += 1
+        check_date -= timedelta(days=1)
+    meals_data["streak"] = streak
+
+    meals_path.write_text(json.dumps(meals_data, ensure_ascii=False, indent=2))
+    lines.append(f"\n✅ 已打卡！连续打卡 {streak} 天")
+
+    return "\n".join(lines)

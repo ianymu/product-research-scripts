@@ -7,7 +7,7 @@ import os
 import json
 import sys
 from datetime import datetime, timezone
-import anthropic
+from openai import OpenAI
 from supabase import create_client
 
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"].strip()
@@ -36,7 +36,7 @@ def run_assessment(cycle_id: int, direction_id: str,
                    direction_name: str) -> dict:
     """Run full capital assessment: Scorecard + VC Valuation + Thiel Test."""
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", "").strip())
 
     # Load existing data
     data = load_validation_data(sb, cycle_id, direction_id)
@@ -181,13 +181,13 @@ Output ONLY this JSON:
 
 IMPORTANT: "score" in scorecard factors is a PERCENTAGE (e.g., 80, 95, 120), NOT a 1-5 scale. weighted_pct is also a percentage (e.g., 95 means 95%)."""
 
-    resp = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=4096,
+    resp = client.chat.completions.create(
+        model="gpt-5.4",
+        max_completion_tokens=4096,
         messages=[{"role": "user", "content": prompt}],
     )
 
-    text = resp.content[0].text
+    text = resp.choices[0].message.content
     start = text.find("{")
     end = text.rfind("}") + 1
     result = json.loads(text[start:end])
