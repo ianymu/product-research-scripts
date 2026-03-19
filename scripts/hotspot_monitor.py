@@ -26,6 +26,7 @@ from hotspot.dedup import upsert_hotspots
 from hotspot.trend_analyzer import analyze_trends, save_trends
 from hotspot.summary import generate_hotspot_summary
 from tg_progress import TGProgress
+from hotspot_monitor_tg_patch import generate_compact_tg_summary
 
 
 def main():
@@ -95,6 +96,38 @@ def main():
             progress.fail("No items collected")
             return
 
+
+        # === WeChat 全文爬取 (Task 3.7) ===
+        if not args.dry_run:
+            wechat_urls = [
+                item.get("source_url") for item in all_items
+                if item.get("platform") == "wechat"
+                and item.get("source_url")
+                and "mp.weixin.qq.com" in item.get("source_url", "")
+            ]
+            if wechat_urls:
+                log.info(f"Crawling {len(wechat_urls)} WeChat articles for full content...")
+                try:
+                    sys.path.insert(0, os.path.expanduser("~/shrimpilot"))
+                    from shrimpilot_bot import crawl_article_content
+                    crawled = 0
+                    for url in wechat_urls[:10]:  # Limit to 10 per run
+                        result = crawl_article_content(url)
+                        if result.get("success"):
+                            crawled += 1
+                    log.info(f"Successfully crawled {crawled}/{len(wechat_urls[:10])} articles")
+                except Exception as e:
+                    log.warning(f"WeChat crawl error (non-fatal): {e}")
+
+        # === Gemini 分析 (Task 3.8) ===
+        if not args.dry_run:
+            try:
+                from gemini_analyzer import process_articles
+                log.info("Running Gemini analysis on crawled articles...")
+                process_articles(limit=5, dry_run=False)
+            except Exception as e:
+                log.warning(f"Gemini analysis error (non-fatal): {e}")
+
         # === 生成摘要 ===
         trends = analyze_trends() if 'trends' not in dir() else trends
         summary = generate_hotspot_summary(
@@ -102,7 +135,40 @@ def main():
         )
         print(summary)
 
-        # === 保存本地摘要 (供 bot 读取) ===
+        # === 按 topic_cluster 聚合，丰富输出 ===
+        from collections import defaultdict
+        topic_groups = defaultdict(list)
+        for item in sorted(all_items, key=lambda x: x.get("hotspot_score", 0), reverse=True):
+            topic_groups[item.get("topic_cluster", "未分类")].append(item)
+
+        enriched_topics = []
+        for topic, articles in topic_groups.items():
+            platforms = list(set(a.get("platform", "") for a in articles))
+            sources = list(set(a.get("source_name", "") for a in articles if a.get("source_name")))
+            enriched_topics.append({
+                "topic": topic,
+                "avg_score": round(sum(a.get("hotspot_score", 0) for a in articles) / len(articles), 1),
+                "max_score": max(a.get("hotspot_score", 0) for a in articles),
+                "article_count": len(articles),
+                "platforms": platforms,
+                "cross_platform_count": len(platforms),
+                "blogger_count": len(sources),
+                "bloggers": sources[:10],
+                "articles": [
+                    {
+                        "source_name": a.get("source_name", ""),
+                        "title": a.get("title", "")[:60],
+                        "platform": a.get("platform", ""),
+                        "score": a.get("hotspot_score", 0),
+                        "keywords": a.get("keywords", [])[:5],
+                        "source_url": a.get("source_url", ""),
+                    }
+                    for a in articles[:8]
+                ]
+            })
+        enriched_topics.sort(key=lambda x: x["avg_score"], reverse=True)
+
+        # === 保存本地摘要 (供 bot + web 读取) ===
         summary_path = os.path.expanduser("~/.shrimpilot/memory/hotspot_summary.json")
         os.makedirs(os.path.dirname(summary_path), exist_ok=True)
         with open(summary_path, "w") as f:
@@ -115,21 +181,32 @@ def main():
                     for p in ("wechat", "xhs", "x")
                 },
                 "summary_text": summary,
-                "top_topics": [
-                    {
-                        "topic": item.get("topic_cluster", ""),
-                        "score": item.get("hotspot_score", 0),
-                        "platform": item.get("platform", ""),
-                    }
-                    for item in sorted(all_items, key=lambda x: x.get("hotspot_score", 0), reverse=True)[:15]
-                ],
+                "top_topics": enriched_topics[:20],
                 "trends": [
                     {"topic": t["topic_cluster"], "type": t["trend_type"], "delta": t["score_delta"]}
                     for t in (trends or [])[:10]
                 ],
             }, f, ensure_ascii=False, indent=2)
 
-        progress.finish("http://18.221.160.170/hotspot-monitor.html")
+        # === 生成精简版 TG 摘要 (Top 3 + 网站链接) ===
+        compact_summary = generate_compact_tg_summary(all_items, trends=trends)
+        print(compact_summary)
+
+        # 推送精简版到 TG
+        from tg_progress import TGProgress as _TGP
+        import urllib.request, urllib.parse
+        _token = os.environ.get("TG_SHRIMPILOT_TOKEN", "").strip()
+        _chat = os.environ.get("TG_SHRIMPILOT_CHAT_ID", "").strip()
+        if _token and _chat:
+            _url = f"https://api.telegram.org/bot{_token}/sendMessage"
+            _data = urllib.parse.urlencode({"chat_id": _chat, "text": compact_summary, "parse_mode": "Markdown"}).encode()
+            try:
+                urllib.request.urlopen(_url, _data, timeout=15)
+                log.info("Compact TG summary sent")
+            except Exception as e:
+                log.warning("TG compact send failed: %s", e)
+
+        progress.finish("http://18.221.160.170/shrimp/hotspot")
         log.info("Done.")
 
     except Exception as e:
