@@ -13,8 +13,9 @@ import time
 import argparse
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import requests
-from supabase import create_client
+from supabase import create_client, ClientOptions
 
 SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"].strip()
@@ -49,7 +50,10 @@ else:
 
 def scrape_hn(cycle_id: int) -> dict:
     """Scrape HackerNews via Algolia API and write to Supabase."""
-    sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+    sb = create_client(
+        SUPABASE_URL, SUPABASE_KEY,
+        options=ClientOptions(httpx_client=httpx.Client(verify=False))
+    )
 
     results = {"total": 0, "written": 0, "duplicates": 0, "errors": 0}
     seen_ids = set()
